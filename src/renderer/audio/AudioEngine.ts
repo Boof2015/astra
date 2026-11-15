@@ -8004,10 +8004,19 @@ export class AudioEngine {
     await this.initContext()
     if (this.context && 'setSinkId' in this.context) {
       await (this.context as AudioContext & { setSinkId: (id: string) => Promise<void> }).setSinkId(deviceId)
+      // Losing an endpoint can suspend the context while transport still intends
+      // to play. Recover that case without starting paused/stopped playback.
+      if (this._playbackState === 'playing' && this.context.state === 'suspended') {
+        await this.context.resume()
+      }
       this.applyChannelRoutingPreferences(this.audioBuffer?.numberOfChannels)
+      if (this.rebuildRemoteStreamRoutingIfActive()) return
+      if (this.rebuildParallaxSinkRoutingIfActive()) return
       if (this._playbackState === 'playing' && this.audioBuffer) {
         await this.seek(this.currentTime)
       }
+    } else {
+      throw new Error('Audio output device selection is unavailable in this browser.')
     }
   }
 

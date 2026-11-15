@@ -131,6 +131,8 @@ interface AudioSettingsStore {
   delayCalibrationMessage: string | null
 
   refreshDevices: () => Promise<void>
+  startDeviceMonitoring: () => void
+  stopDeviceMonitoring: () => void
   refreshOutputChannelCount: () => Promise<void>
   setPlaybackOutputMode: (mode: PlaybackOutputMode) => Promise<void>
   setDisableGaplessPrebufferDev: (disabled: boolean) => void
@@ -238,7 +240,7 @@ const OUTPUT_ANCHOR_MIN_CONFIDENCE = 0.28
 const OUTPUT_ANCHOR_ROUNDTRIP_TOLERANCE_MS = 250
 const AUTO_OFFSET_DOWNWARD_OUTLIER_DELTA_MS = 220
 const AUTO_OFFSET_DOWNWARD_OUTLIER_MAX_CONFIDENCE = 0.5
-let mediaDeviceChangeListenerAttached = false
+const DEFAULT_OUTPUT_POLL_MS = 2000
 const SYSTEM_DEFAULT_LABEL_SUFFIX = ' (System Default)'
 const DEFAULT_ALIAS_PREFIX_PATTERN = /^\s*default\s*-\s*/i
 
@@ -490,12 +492,19 @@ function isNativeOutputMode(mode: PlaybackOutputMode): boolean {
   return mode === 'exclusive' || mode === 'bitperfect'
 }
 
+function normalizeStandardOutputSelection(deviceId: string): string {
+  const normalized = deviceId.trim()
+  return normalized === 'default' ? '' : normalized
+}
+
 function resolvePhysicalDefaultDeviceId(devices: AudioDevice[]): string | null {
   const defaultAlias = devices.find((device) => device.isDefaultAlias)
   if (!defaultAlias || !defaultAlias.groupId) return null
 
   const physical = devices.find((device) => (
     !device.isDefaultAlias
+    // Windows exposes another virtual endpoint for its communications role.
+    && device.deviceId !== 'communications'
     && device.groupId.length > 0
     && device.groupId === defaultAlias.groupId
   ))
@@ -848,7 +857,7 @@ function buildInputBaselineKey(inputDeviceKey: string, sampleRate: number): stri
 }
 
 function buildAudioDevice(entry: MediaDeviceInfo): AudioDevice {
-  const deviceId = entry.deviceId
+  const deviceId = normalizeStandardOutputSelection(entry.deviceId)
   const isDefaultAlias = deviceId === 'default' || deviceId === ''
   const fallbackLabel = isDefaultAlias
     ? 'System Default Device'
@@ -958,6 +967,29 @@ function parseSpeakerProfiles(raw: string | null): Record<string, DeviceSpeakerP
 }
 
 export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
+  let outputRevision = 0
+  let outputRoutingSuspended = false
+  let appliedStandardDeviceId: string | null = null
+  let deviceRefreshTask: Promise<void> | null = null
+  let deviceRefreshRequested = false
+  let stopDeviceMonitoring: (() => void) | null = null
+
+  const suspendOutputRouting = async (): Promise<void> => {
+    outputRoutingSuspended = true
+    outputRevision += 1
+    appliedStandardDeviceId = null
+    await deviceRefreshTask
+  }
+
+  const withOutputRoutingSuspended = async (operation: () => Promise<void>): Promise<void> => {
+    await suspendOutputRouting()
+    try {
+      await operation()
+    } finally {
+      outputRoutingSuspended = false
+    }
+  }
+
   const persistDelaySettings = (
     profiles: Record<string, DelayCompensationProfile>,
     inputBaselinesByKey: Record<string, InputDelayBaseline>
@@ -1125,36 +1157,122 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     }
   }
 
-  const handleMediaDeviceChange = async (): Promise<void> => {
-    await get().refreshDevices()
-
-    const state = get()
-    const selectedDeviceId = state.selectedDeviceId.trim()
-    if (selectedDeviceId.length > 0 && selectedDeviceId !== 'default') {
-      const deviceStillExists = state.availableDevices.some((device) => device.deviceId === selectedDeviceId)
-      if (!deviceStillExists) {
-        try {
-          await audioEngine.setOutputDevice('')
-        } catch {
-          // Ignore failures when falling back to default output.
-        }
-        set({ selectedDeviceId: '' })
-        localStorage.removeItem(getOutputStorageKeyForMode(state.playbackOutputMode))
-        await syncSpeakerProfileForActiveDevice()
-        await syncDelayCompensationForActiveDevice()
-      }
+  // Enumeration and sink changes share one worker. A selection/mode change invalidates
+  // results already in flight; notifications during a refresh request another pass.
+  const refreshDevicesOnce = async (): Promise<void> => {
+    if (outputRoutingSuspended) return
+    const revision = outputRevision
+    const playbackOutputMode = get().playbackOutputMode
+    const isCurrent = (): boolean => (
+      revision === outputRevision
+      && !outputRoutingSuspended
+      && playbackOutputMode === get().playbackOutputMode
+    )
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    if (!isCurrent()) return
+    const audioInputs = devices.filter((device) => device.kind === 'audioinput').map(buildCalibrationInputDevice)
+    let audioOutputs = devices.filter((device) => device.kind === 'audiooutput').map(buildAudioDevice)
+    let nativeAudioCapabilities = get().nativeAudioCapabilities
+    let playbackModeStatusMessage = get().playbackModeStatusMessage
+    if (isNativeOutputMode(playbackOutputMode)) {
+      nativeAudioCapabilities = await audioEngine.refreshNativeAudioCapabilities()
+      audioOutputs = buildNativeOutputDevices(nativeAudioCapabilities)
+      playbackModeStatusMessage = audioEngine.getPlaybackModeStatusMessage()
     }
+    if (!isCurrent()) return
+    set({ nativeAudioCapabilities, playbackModeStatusMessage, availableDevices: audioOutputs, availableInputDevices: audioInputs })
+
+    const selectedInputId = get().selectedCalibrationInputDeviceId.trim()
+    if (selectedInputId && selectedInputId !== 'default' && !audioInputs.some((device) => device.deviceId === selectedInputId)) {
+      set({ selectedCalibrationInputDeviceId: '' })
+      localStorage.removeItem(CALIBRATION_INPUT_STORAGE_KEY)
+    }
+
+    if (playbackOutputMode === 'standard') {
+      let selection = normalizeStandardOutputSelection(get().selectedDeviceId)
+      if (selection && !audioOutputs.some((device) => device.deviceId === selection)) {
+        selection = ''
+      }
+      set({ selectedDeviceId: selection })
+      if (!selection) localStorage.removeItem(STORAGE_KEY)
+      const target = selection || resolvePhysicalDefaultDeviceId(audioOutputs) || ''
+      const routeChanged = appliedStandardDeviceId !== target
+        || normalizeStandardOutputSelection(audioEngine.getOutputDeviceId()) !== target
+      if (routeChanged) {
+        // Do not record a failed or superseded switch as applied. The next pass retries it.
+        appliedStandardDeviceId = null
+        await audioEngine.setOutputDevice(target)
+        if (!isCurrent()) return
+      }
+      const maxChannels = audioEngine.getOutputMaxChannelCount()
+      const profileKey = resolveActiveDelayProfileTarget(selection, audioOutputs).key
+      if (routeChanged || maxChannels !== get().selectedDeviceMaxChannelCount || profileKey !== get().activeSpeakerProfileKey) {
+        set({ selectedDeviceMaxChannelCount: maxChannels })
+        await syncSpeakerProfileForActiveDevice()
+        if (!isCurrent()) return
+        await syncDelayCompensationForActiveDevice()
+        if (!isCurrent()) return
+      }
+      appliedStandardDeviceId = target
+      return
+    }
+
+    await get().refreshOutputChannelCount()
+    if (!isCurrent()) return
+    await syncSpeakerProfileForActiveDevice()
+    if (!isCurrent()) return
+    await syncDelayCompensationForActiveDevice()
   }
 
-  const ensureMediaDeviceChangeListener = (): void => {
-    if (mediaDeviceChangeListenerAttached) return
-    if (!navigator.mediaDevices?.addEventListener) return
+  const refreshDevices = (): Promise<void> => {
+    if (outputRoutingSuspended) return Promise.resolve()
+    deviceRefreshRequested = true
+    if (!deviceRefreshTask) {
+      deviceRefreshTask = Promise.resolve().then(async () => {
+        try {
+          while (deviceRefreshRequested) {
+            deviceRefreshRequested = false
+            const revision = outputRevision
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+              try {
+                await refreshDevicesOnce()
+                break
+              } catch (error) {
+                console.warn('Could not refresh audio output route:', error)
+                if (revision !== outputRevision || outputRoutingSuspended) break
+              }
+            }
+          }
+        } finally {
+          deviceRefreshTask = null
+        }
+      })
+    }
+    return deviceRefreshTask
+  }
 
-    navigator.mediaDevices.addEventListener('devicechange', () => {
-      void handleMediaDeviceChange()
-    })
-
-    mediaDeviceChangeListenerAttached = true
+  const handleMediaDeviceChange = async (): Promise<void> => {
+    const revision = outputRevision
+    await refreshDevices()
+    if (revision !== outputRevision || outputRoutingSuspended) return
+    const state = get()
+    // Preserve the existing native-device removal behavior. Standard routes are
+    // reconciled by the worker, including their fallback to System Default.
+    if (!isNativeOutputMode(state.playbackOutputMode)) return
+    const selectedDeviceId = state.selectedDeviceId.trim()
+    if (selectedDeviceId && selectedDeviceId !== 'default'
+      && !state.availableDevices.some((device) => device.deviceId === selectedDeviceId)) {
+      try {
+        await audioEngine.setOutputDevice('')
+      } catch {
+        // Native fallback remains best effort.
+      }
+      if (revision !== outputRevision) return
+      set({ selectedDeviceId: '' })
+      localStorage.removeItem(getOutputStorageKeyForMode(state.playbackOutputMode))
+      await syncSpeakerProfileForActiveDevice()
+      await syncDelayCompensationForActiveDevice()
+    }
   }
 
   const persistSpatialLayout = (
@@ -1230,47 +1348,43 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     delayCalibrationState: 'idle',
     delayCalibrationMessage: null,
 
-    refreshDevices: async () => {
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices()
-        const audioInputs = devices
-          .filter((device) => device.kind === 'audioinput')
-          .map(buildCalibrationInputDevice)
-        const playbackOutputMode = get().playbackOutputMode
-        let audioOutputs = devices
-          .filter((device) => device.kind === 'audiooutput')
-          .map(buildAudioDevice)
-        let nativeAudioCapabilities = get().nativeAudioCapabilities
-        let playbackModeStatusMessage = get().playbackModeStatusMessage
+    refreshDevices,
 
-        if (isNativeOutputMode(playbackOutputMode)) {
-          nativeAudioCapabilities = await audioEngine.refreshNativeAudioCapabilities()
-          audioOutputs = buildNativeOutputDevices(nativeAudioCapabilities)
-          playbackModeStatusMessage = audioEngine.getPlaybackModeStatusMessage()
+    startDeviceMonitoring: () => {
+      if (stopDeviceMonitoring) return
+      const mediaDevices = navigator.mediaDevices
+      const onDeviceChange = (): void => { void handleMediaDeviceChange() }
+      const onFocus = (): void => { void refreshDevices() }
+      let pollTimer: ReturnType<typeof setInterval> | null = null
+      const syncPolling = (): void => {
+        const state = get()
+        const shouldPoll = state.playbackOutputMode === 'standard'
+          && normalizeStandardOutputSelection(state.selectedDeviceId) === ''
+        if (shouldPoll && pollTimer === null) {
+          pollTimer = setInterval(() => { void refreshDevices() }, DEFAULT_OUTPUT_POLL_MS)
+        } else if (!shouldPoll && pollTimer !== null) {
+          clearInterval(pollTimer)
+          pollTimer = null
         }
-
-        set({
-          nativeAudioCapabilities,
-          playbackModeStatusMessage,
-          availableDevices: audioOutputs,
-          availableInputDevices: audioInputs
-        })
-
-        const selectedInputId = get().selectedCalibrationInputDeviceId.trim()
-        if (selectedInputId.length > 0 && selectedInputId !== 'default') {
-          const inputStillExists = audioInputs.some((device) => device.deviceId === selectedInputId)
-          if (!inputStillExists) {
-            set({ selectedCalibrationInputDeviceId: '' })
-            localStorage.removeItem(CALIBRATION_INPUT_STORAGE_KEY)
-          }
-        }
-
-        await get().refreshOutputChannelCount()
-        await syncSpeakerProfileForActiveDevice()
-        await syncDelayCompensationForActiveDevice()
-      } catch {
-        console.warn('Could not enumerate audio devices')
       }
+      mediaDevices?.addEventListener('devicechange', onDeviceChange)
+      window.addEventListener('focus', onFocus)
+      const unsubscribe = useAudioSettingsStore.subscribe(syncPolling)
+      syncPolling()
+      stopDeviceMonitoring = () => {
+        mediaDevices?.removeEventListener('devicechange', onDeviceChange)
+        window.removeEventListener('focus', onFocus)
+        unsubscribe()
+        if (pollTimer !== null) clearInterval(pollTimer)
+      }
+    },
+
+    stopDeviceMonitoring: () => {
+      stopDeviceMonitoring?.()
+      stopDeviceMonitoring = null
+      outputRevision += 1
+      deviceRefreshRequested = false
+      appliedStandardDeviceId = null
     },
 
     refreshOutputChannelCount: async () => {
@@ -1284,58 +1398,53 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     setPlaybackOutputMode: async (mode: PlaybackOutputMode) => {
-      const normalizedMode = normalizePlaybackOutputMode(mode)
-      const previousMode = get().playbackOutputMode
-      const result = await audioEngine.setPlaybackOutputMode(normalizedMode)
-      const fallbackMode = result.activeMode
-      const selectedStorageKey = getOutputStorageKeyForMode(fallbackMode)
-      const savedSelectedDeviceId = localStorage.getItem(selectedStorageKey) ?? ''
-      const capabilities = isNativeOutputMode(fallbackMode)
-        ? await audioEngine.refreshNativeAudioCapabilities()
-        : result.capabilities
+      await suspendOutputRouting()
+      try {
+        const normalizedMode = normalizePlaybackOutputMode(mode)
+        const previousMode = get().playbackOutputMode
+        const result = await audioEngine.setPlaybackOutputMode(normalizedMode)
+        const fallbackMode = result.activeMode
+        const selectedStorageKey = getOutputStorageKeyForMode(fallbackMode)
+        const capabilities = isNativeOutputMode(fallbackMode)
+          ? await audioEngine.refreshNativeAudioCapabilities()
+          : result.capabilities
+        const savedSelectedDeviceId = localStorage.getItem(selectedStorageKey) ?? ''
 
-      set({
-        playbackOutputMode: fallbackMode,
-        nativeAudioCapabilities: capabilities,
-        nativeAudioOutputStatus: audioEngine.getNativeAudioOutputStatus(),
-        playbackModeStatusMessage: result.message ?? audioEngine.getPlaybackModeStatusMessage()
-      })
+        set({
+          playbackOutputMode: fallbackMode,
+          ...(fallbackMode === 'standard' ? { selectedDeviceId: normalizeStandardOutputSelection(savedSelectedDeviceId) } : {}),
+          nativeAudioCapabilities: capabilities,
+          nativeAudioOutputStatus: audioEngine.getNativeAudioOutputStatus(),
+          playbackModeStatusMessage: result.message ?? audioEngine.getPlaybackModeStatusMessage()
+        })
+        localStorage.setItem(PLAYBACK_OUTPUT_MODE_STORAGE_KEY, fallbackMode)
+        logMemoryDiagnosticsEvent('playback_output_mode_changed', {
+          requestedMode: normalizedMode,
+          previousMode,
+          activeMode: fallbackMode,
+          message: result.message ?? null,
+          bitPerfectActive: audioEngine.isBitPerfectActive()
+        })
+        outputRoutingSuspended = false
+        await refreshDevices()
 
-      localStorage.setItem(PLAYBACK_OUTPUT_MODE_STORAGE_KEY, fallbackMode)
-      logMemoryDiagnosticsEvent('playback_output_mode_changed', {
-        requestedMode: normalizedMode,
-        previousMode,
-        activeMode: fallbackMode,
-        message: result.message ?? null,
-        bitPerfectActive: audioEngine.isBitPerfectActive()
-      })
-      await get().refreshDevices()
-
-      const selectedOutputId = savedSelectedDeviceId.trim()
-      const availableDevices = get().availableDevices
-      const selectedExists = selectedOutputId.length === 0
-        ? true
-        : availableDevices.some((device) => device.deviceId === selectedOutputId)
-
-      if (selectedExists && selectedOutputId.length > 0) {
-        await get().selectDevice(selectedOutputId)
-      } else if (selectedExists) {
-        const initialSelection = resolveInitialNativeOutputSelection(capabilities, availableDevices)
-        if (initialSelection.statusMessage) {
-          set({ playbackModeStatusMessage: initialSelection.statusMessage })
+        if (isNativeOutputMode(fallbackMode)) {
+          const selectedOutputId = savedSelectedDeviceId.trim()
+          const availableDevices = get().availableDevices
+          if (selectedOutputId && availableDevices.some((device) => device.deviceId === selectedOutputId)) {
+            await get().selectDevice(selectedOutputId)
+          } else {
+            localStorage.removeItem(selectedStorageKey)
+            const initialSelection = resolveInitialNativeOutputSelection(capabilities, availableDevices)
+            if (initialSelection.statusMessage) set({ playbackModeStatusMessage: initialSelection.statusMessage })
+            await get().selectDevice(initialSelection.deviceId)
+          }
         }
-        await get().selectDevice(initialSelection.deviceId)
-      } else {
-        localStorage.removeItem(selectedStorageKey)
-        const initialSelection = resolveInitialNativeOutputSelection(capabilities, availableDevices)
-        if (initialSelection.statusMessage) {
-          set({ playbackModeStatusMessage: initialSelection.statusMessage })
+        if (fallbackMode !== normalizedMode && result.message) {
+          set({ playbackModeStatusMessage: result.message })
         }
-        await get().selectDevice(initialSelection.deviceId)
-      }
-
-      if (fallbackMode !== normalizedMode && result.message) {
-        set({ playbackModeStatusMessage: result.message })
+      } finally {
+        outputRoutingSuspended = false
       }
     },
 
@@ -1391,14 +1500,37 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
     },
 
     selectDevice: async (deviceId: string) => {
+      const revision = ++outputRevision
+      appliedStandardDeviceId = null
       try {
         const playbackOutputMode = get().playbackOutputMode
+        if (playbackOutputMode === 'standard') {
+          const selectedDeviceId = normalizeStandardOutputSelection(deviceId)
+          const previousSelection = get().selectedDeviceId
+          const previousSavedSelection = localStorage.getItem(STORAGE_KEY)
+          set({ selectedDeviceId, delayCalibrationState: 'idle', delayCalibrationMessage: null })
+          if (selectedDeviceId) localStorage.setItem(STORAGE_KEY, selectedDeviceId)
+          else localStorage.removeItem(STORAGE_KEY)
+          await refreshDevices()
+          // A failed explicit choice retains the previous route, as before.
+          // System Default remains selected on failure so monitoring can recover it.
+          if (selectedDeviceId && revision === outputRevision && appliedStandardDeviceId === null) {
+            set({ selectedDeviceId: previousSelection })
+            if (previousSavedSelection === null) localStorage.removeItem(STORAGE_KEY)
+            else localStorage.setItem(STORAGE_KEY, previousSavedSelection)
+            await refreshDevices()
+          }
+          return
+        }
+        await deviceRefreshTask
+        if (revision !== outputRevision) return
         const requestedDeviceId = isNativeOutputMode(playbackOutputMode)
           && (deviceId.trim().length === 0 || deviceId.trim() === 'default')
           ? (resolvePhysicalDefaultDeviceId(get().availableDevices) ?? deviceId)
           : deviceId
 
         await audioEngine.setOutputDevice(requestedDeviceId)
+        if (revision !== outputRevision) return
         const nativeAudioCapabilities = isNativeOutputMode(playbackOutputMode)
           ? audioEngine.getNativeAudioCapabilities()
           : get().nativeAudioCapabilities
@@ -2156,7 +2288,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
       })
     },
 
-    resetToDefaults: async () => {
+    resetToDefaults: () => withOutputRoutingSuspended(async () => {
       localStorage.removeItem(STORAGE_KEY)
       localStorage.removeItem(NATIVE_OUTPUT_STORAGE_KEY)
       localStorage.removeItem(PLAYBACK_OUTPUT_MODE_STORAGE_KEY)
@@ -2312,9 +2444,11 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         delayCalibrationState: 'idle',
         delayCalibrationMessage: null,
       })
-    },
+      outputRoutingSuspended = false
+      await refreshDevices()
+    }),
 
-    initFromSaved: async () => {
+    initFromSaved: () => withOutputRoutingSuspended(async () => {
       const disableStandardAnalysisGraphDev = readDevDisableStandardAnalysisGraph()
       audioEngine.setDisableStandardAnalysisGraphDev(disableStandardAnalysisGraphDev)
       localStorage.removeItem(LEGACY_ROUTING_STORAGE_KEY)
@@ -2388,6 +2522,9 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
       set({
         playbackOutputMode,
+        ...(playbackOutputMode === 'standard'
+          ? { selectedDeviceId: normalizeStandardOutputSelection(localStorage.getItem(STORAGE_KEY) ?? '') }
+          : {}),
         disableGaplessPrebufferDev: readDevDisableGaplessPrebuffer(),
         disableStandardAnalysisGraphDev,
         nativeAudioCapabilities,
@@ -2404,24 +2541,27 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
         exclusiveLimiterEnabled: savedExclusiveLimiterEnabled
       })
 
-      await get().refreshDevices()
+      outputRoutingSuspended = false
+      await refreshDevices()
 
-      const saved = localStorage.getItem(getOutputStorageKeyForMode(get().playbackOutputMode))
-      if (saved) {
-        const { availableDevices } = get()
-        const exists = availableDevices.some((device) => device.deviceId === saved)
-        if (exists) {
-          await get().selectDevice(saved)
+      if (isNativeOutputMode(playbackOutputMode)) {
+        const saved = localStorage.getItem(getOutputStorageKeyForMode(get().playbackOutputMode))
+        if (saved) {
+          const { availableDevices } = get()
+          const exists = availableDevices.some((device) => device.deviceId === saved)
+          if (exists) {
+            await get().selectDevice(saved)
+          } else {
+            localStorage.removeItem(getOutputStorageKeyForMode(get().playbackOutputMode))
+            set({ selectedDeviceId: '' })
+          }
         } else {
-          localStorage.removeItem(getOutputStorageKeyForMode(get().playbackOutputMode))
-          set({ selectedDeviceId: '' })
+          const initialSelection = resolveInitialNativeOutputSelection(nativeAudioCapabilities, get().availableDevices)
+          if (initialSelection.statusMessage) {
+            set({ playbackModeStatusMessage: initialSelection.statusMessage })
+          }
+          await get().selectDevice(initialSelection.deviceId)
         }
-      } else {
-        const initialSelection = resolveInitialNativeOutputSelection(nativeAudioCapabilities, get().availableDevices)
-        if (initialSelection.statusMessage) {
-          set({ playbackModeStatusMessage: initialSelection.statusMessage })
-        }
-        await get().selectDevice(initialSelection.deviceId)
       }
 
       const savedCalibrationInputDeviceId = localStorage.getItem(CALIBRATION_INPUT_STORAGE_KEY)
@@ -2485,8 +2625,7 @@ export const useAudioSettingsStore = create<AudioSettingsStore>((set, get) => {
 
       await audioEngine.setSourceSpeakerRoutingMap(savedSourceSpeakerRoutingMap)
 
-      ensureMediaDeviceChangeListener()
       await syncDelayCompensationForActiveDevice({ resetCalibrationStatus: true })
-    }
+    })
   }
 })

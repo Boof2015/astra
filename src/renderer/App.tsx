@@ -426,6 +426,7 @@ function App() {
     const sessionSnapshot = readSessionSnapshot()
 
     useThemeStore.getState().initFromSaved()
+    useAudioSettingsStore.getState().startDeviceMonitoring()
     useAudioSettingsStore.getState().initFromSaved()
     useDiscordSettingsStore.getState().initFromSaved()
     void useLocalApiSettingsStore.getState().init()
@@ -533,6 +534,7 @@ function App() {
     })
     return () => {
       didUnmount = true
+      useAudioSettingsStore.getState().stopDeviceMonitoring()
       unsubscribeFileCreatedAtBackfill()
       unsubscribeBackfill()
       unsubscribeExternalLibraryMutation()
