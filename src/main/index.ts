@@ -11,7 +11,7 @@ import { createPlexAudioSource } from './services/plexAudioSource'
 import type { PlexConnectInput, PlexSource } from '../types/plex'
 import { analyzeRemoteAudioFile, analyzeRemoteAudioPcm } from './services/remoteAudioAnalysis'
 import { parseCompanionDeviceInfo, type CompanionDeviceInfo } from '../shared/companionDevices'
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, clipboard, screen, safeStorage, powerMonitor, protocol, session, globalShortcut, Menu, Tray, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeImage, nativeTheme, clipboard, screen, safeStorage, powerMonitor, protocol, session, globalShortcut, Menu, Tray, type MenuItemConstructorOptions } from 'electron'
 import { join, basename, extname } from 'path'
 import { NotchController } from './services/notchController'
 import { installFixedWindowZoom } from './fixedWindowZoom'
@@ -203,6 +203,7 @@ import {
   createTrayMenuStateKey,
 } from './services/trayMenu'
 import { TrayRendererCommandQueue } from './services/trayRendererCommandQueue'
+import { installWindowsTaskbarControls } from './services/windowsTaskbar'
 import {
   mergeMiniPlayerSnapshots,
   type MiniPlayerCommand,
@@ -425,6 +426,7 @@ let lyricsPopoutWindowPrefs: LyricsPopoutWindowPrefs | null = null
 let desktopIntegrationPrefs: DesktopIntegrationPrefs = { ...DEFAULT_DESKTOP_INTEGRATION_PREFS }
 let latestTrayRendererState: TrayRendererState = { ...DEFAULT_TRAY_RENDERER_STATE }
 let trayRendererReady = false
+let windowsTaskbarControls: ReturnType<typeof installWindowsTaskbarControls> | null = null
 let latestTrayMenuStateKey: string | null = null
 let trayMinuteRefreshTimer: ReturnType<typeof setTimeout> | null = null
 const pendingTrayRendererCommands = new TrayRendererCommandQueue()
@@ -5392,6 +5394,17 @@ function createWindow(): void {
       backgroundThrottling: false
     }
   })
+  if (process.platform === 'win32') {
+    const taskbarResources = app.isPackaged
+      ? join(process.resourcesPath, 'taskbar')
+      : join(app.getAppPath(), 'resources', 'taskbar')
+    windowsTaskbarControls = installWindowsTaskbarControls({
+      window: mainWindow,
+      theme: nativeTheme,
+      loadIcon: (name, dark) => nativeImage.createFromPath(join(taskbarResources, `${name}-${dark ? 'dark' : 'light'}.ico`)),
+      sendCommand: sendMiniPlayerCommand,
+    })
+  }
   logMemoryDiagnosticsMainEvent('window_opened', {
     windowType: 'main'
   })
@@ -5438,6 +5451,7 @@ function createWindow(): void {
     providerPlaybackService.finishCurrent()
     globalInputShortcutService.clear()
     mainWindow = null
+    windowsTaskbarControls = null
     notchController?.mainWindowClosed()
     trayRendererReady = false
     latestTrayRendererState = { ...DEFAULT_TRAY_RENDERER_STATE }
@@ -6353,6 +6367,7 @@ ipcMain.handle('desktop-integration:setCloseToTray', async (_event, enabled: unk
 ipcMain.on('tray-controls:rendererReady', (event) => {
   if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return
   trayRendererReady = true
+  windowsTaskbarControls?.setRendererReady(true)
   flushPendingTrayRendererCommands()
   refreshTrayMenu()
 })
@@ -6360,6 +6375,7 @@ ipcMain.on('tray-controls:rendererReady', (event) => {
 ipcMain.on('tray-controls:rendererNotReady', (event) => {
   if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return
   trayRendererReady = false
+  windowsTaskbarControls?.setRendererReady(false)
   latestTrayRendererState = { ...DEFAULT_TRAY_RENDERER_STATE }
   refreshTrayMenu()
 })
@@ -6385,6 +6401,7 @@ ipcMain.on('tray-controls:publishRendererState', (event, rawState: unknown) => {
     globalHotkeysSuspended: candidate.globalHotkeysSuspended === true,
     configuredGlobalHotkeyCount,
   }
+  windowsTaskbarControls?.setRendererReady(true)
   refreshTrayMenu()
 })
 
@@ -6466,6 +6483,7 @@ ipcMain.on('mini-player:publishSnapshot', (event, snapshot: MiniPlayerSnapshot) 
   if (event.sender !== mainWindow?.webContents) return
   const mergedSnapshot = mergeMiniPlayerSnapshots(latestMiniPlayerSnapshot, snapshot)
   latestMiniPlayerSnapshot = mergedSnapshot
+  windowsTaskbarControls?.publishSnapshot(mergedSnapshot)
   notchController?.publishSnapshot(mergedSnapshot)
   localApiService.publishSnapshot(mergedSnapshot)
   phoneRemoteService.publishSnapshot(mergedSnapshot)

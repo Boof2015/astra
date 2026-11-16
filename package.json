@@ -7,6 +7,7 @@
     "dev": "node ./scripts/build/writeAppBuildMetadata.cjs && electron-vite dev",
     "build": "electron-vite build && node ./scripts/build/writeAppBuildMetadata.cjs",
     "build:icons": "node scripts/build/generate-astra-icons.mjs",
+    "build:taskbar-icons": "node scripts/build/generate-taskbar-icons.cjs",
     "preview": "electron-vite preview",
     "check:media-binaries": "node scripts/electron-builder/validate-media-binaries.cjs",
     "check:packaging-config": "node ./scripts/electron-builder/validate-config.cjs",
@@ -152,6 +153,13 @@
         "to": "tray/",
         "filter": [
           "*"
+        ]
+      },
+      {
+        "from": "resources/taskbar/",
+        "to": "taskbar/",
+        "filter": [
+          "*.ico"
         ]
       },
       {
