@@ -27,6 +27,34 @@ const packageJsonPath = path.resolve(__dirname, '../../package.json')
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'))
 const buildConfig = packageJson.build ?? {}
 
+if (buildConfig.nsis?.oneClick !== false || buildConfig.nsis?.allowToChangeInstallationDirectory !== true) {
+  fail('Windows installs must retain the assisted installer and installation-folder picker.')
+}
+if (buildConfig.nsis?.include !== 'resources/installer.nsh' || !fs.existsSync(path.resolve(__dirname, '../../resources/installer.nsh'))) {
+  fail('Windows installs must include resources/installer.nsh to preserve shortcuts during upgrades.')
+}
+
+// Our customHeader clears the folder-picker flag only after the page is declared,
+// and before the stock shortcut policy is compiled. Fail on upstream template
+// changes so an electron-builder upgrade cannot silently remove the picker or
+// resume deleting shortcuts and taskbar pins during manual upgrades.
+const nsisTemplates = path.join(path.dirname(require.resolve('app-builder-lib/package.json')), 'templates/nsis')
+const installerTemplate = fs.readFileSync(path.join(nsisTemplates, 'installer.nsi'), 'utf8')
+const requiredTemplateOrder = [
+  '!include "assistedInstaller.nsh"',
+  '!insertmacro customHeader',
+  '!include "installUtil.nsh"',
+  '!include "installSection.nsh"'
+].map((marker) => installerTemplate.indexOf(marker))
+if (requiredTemplateOrder.some((offset, index) => offset < 0 || (index > 0 && offset <= requiredTemplateOrder[index - 1]))) {
+  fail('electron-builder NSIS hook ordering changed; review the Windows shortcut-preservation hook.')
+}
+const installUtilTemplate = fs.readFileSync(path.join(nsisTemplates, 'include/installUtil.nsh'), 'utf8')
+const shortcutPolicy = installUtilTemplate.match(/!macro setIsTryToKeepShortcuts\s+([\s\S]*?)!macroend/)?.[1]
+if (!shortcutPolicy?.includes('!ifdef allowToChangeInstallationDirectory')) {
+  fail('electron-builder NSIS shortcut policy changed; review the Windows shortcut-preservation hook.')
+}
+
 if (packageJson.dependencies?.['ffmpeg-ffprobe-static'] !== '6.1.2-rc.1' || packageJson.dependencies?.['ffprobe-static']) {
   fail('Use the pinned ffmpeg-ffprobe-static metadata binary; remove the obsolete ffprobe-static package.')
 }

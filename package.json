@@ -324,6 +324,7 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
+      "include": "resources/installer.nsh",
       "artifactName": "Astra.Setup.${version}.Windows.${ext}"
     },
     "portable": {
