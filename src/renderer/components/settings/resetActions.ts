@@ -177,6 +177,8 @@ export async function resetEqSettings(): Promise<string> {
 }
 
 export async function resetAllSettings(): Promise<string> {
+  await window.electronAPI.library.setRatingPreferences({ enabled: false, writeToFiles: false })
+  await useRatingsStore.getState().loadPreferences()
   useThemeStore.getState().resetToDefault()
   await useAudioSettingsStore.getState().resetToDefaults()
   usePlayerStore.getState().resetAudioPreferences()

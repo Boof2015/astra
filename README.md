@@ -54,6 +54,14 @@ Up to 20 fully parametric bands, a live frequency response graph with spectrum o
 
 Point Astra at your music folders and it handles metadata extraction, album artwork, and a searchable library you can browse by artist, album, or track. Reads ID3v2.4 and Vorbis Comments, parses multiartist tags properly, supports custom artist images, and scans `.lrc` files by filename. Favorites and recently played are tracked automatically, and the built-in metadata editor lets you fix tags without leaving the player. A Quick Launch palette and full keyboard shortcuts get you anywhere without touching the mouse.
 
+### Track ratings
+
+Enable Track Ratings in Settings to read existing ratings from file tags during library scans.
+Use **Force Rescan** once for unchanged files already in the library; **Scan for Changes** continues to skip unchanged files.
+Ratings set or cleared in Astra take precedence over file tags and work with dynamic playlist filters.
+
+**Write ratings to files** is a separate option, disabled by default. It applies only to future rating edits and clears on supported local files (MP3, FLAC, Ogg/Vorbis, Opus, and M4A). Older ID3v2.2/2.3 MP3 tags and unsupported structures are left unchanged. If a file cannot be updated, the rating stays in Astra and Settings shows the failure details.
+
 ### Astra Resolve
 
 Many music files store every performer in one plain-text Artist field. Splitting that field on commas or ampersands makes collaborations clickable, but it also breaks names like `Tyler, the Creator` and `Earth, Wind & Fire`. Treating the whole field as one name avoids that problem, but turns every collaboration into a single fake artist.

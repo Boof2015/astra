@@ -588,6 +588,10 @@ export default function SettingsView() {
   const consumePendingSettingsSection = useUIStore((state) => state.consumePendingSettingsSection)
   const trackRatingsEnabled = useRatingsStore((state) => state.enabled)
   const setTrackRatingsEnabled = useRatingsStore((state) => state.setEnabled)
+  const writeRatingsToFiles = useRatingsStore((state) => state.writeToFiles)
+  const setWriteRatingsToFiles = useRatingsStore((state) => state.setWriteToFiles)
+  const ratingPreferencesUnavailable = useRatingsStore((state) => state.preferencesBusy || !state.preferencesReady)
+  const ratingFileFailures = useRatingsStore((state) => state.fileFailures)
   const libraryGraphEnabled = useGraphStore((state) => state.enabled)
   const setLibraryGraphEnabled = useGraphStore((state) => state.setEnabled)
   const openFullGraph = useGraphStore((state) => state.openFullMap)
@@ -2114,20 +2118,48 @@ export default function SettingsView() {
                 <div className="settings-card-label">Track Ratings</div>
                 <div className="settings-grid">
                   <div className="settings-field settings-field-inline">
-                    <span className="settings-field-label">Ratings</span>
+                    <div className="settings-rating-copy">
+                      <span className="settings-field-label" id="track-ratings-label">Ratings</span>
+                      <span className="settings-rating-description">Half-star ratings and playlist filters.</span>
+                    </div>
                     <button
                       className={`settings-toggle ${trackRatingsEnabled ? 'active' : ''}`}
                       onClick={() => setTrackRatingsEnabled(!trackRatingsEnabled)}
-                      title="Rate tracks with 1-5 stars in half-star steps"
+                      disabled={ratingPreferencesUnavailable}
+                      aria-pressed={trackRatingsEnabled}
+                      aria-labelledby="track-ratings-label"
                     >
                       {trackRatingsEnabled ? 'Enabled' : 'Disabled'}
                     </button>
                   </div>
-                  <p className="settings-note">
-                    Rate tracks with 1-5 stars in half-star steps. Adds a rating column to tracklists,
-                    a Rate entry to the track menu, and rating filters for dynamic playlists. Ratings
-                    are kept if you turn this off.
-                  </p>
+                  {trackRatingsEnabled && <>
+                    <div className="settings-field settings-field-inline">
+                      <div className="settings-rating-copy">
+                        <span className="settings-field-label" id="write-ratings-label">Write ratings to files</span>
+                        <span className="settings-rating-description">Save future rating edits to your music files.</span>
+                      </div>
+                      <button className={`settings-toggle ${writeRatingsToFiles ? 'active' : ''}`}
+                        disabled={ratingPreferencesUnavailable} aria-pressed={writeRatingsToFiles}
+                        aria-labelledby="write-ratings-label"
+                        onClick={() => setWriteRatingsToFiles(!writeRatingsToFiles)}>
+                        {writeRatingsToFiles ? 'Enabled' : 'Disabled'}
+                      </button>
+                    </div>
+                  </>}
+                  <details className="settings-rating-details">
+                    <summary>Importing ratings &amp; file support</summary>
+                    <p>File ratings are read during scans. For music already in Astra, use <strong>Force Rescan</strong>.</p>
+                    <p>Ratings you set or clear in Astra take priority. Turning ratings off keeps them saved.</p>
+                    <p>File writing supports MP3, FLAC, Ogg, Opus and M4A. Older ID3v2.2/2.3 tags stay unchanged.
+                      If a file update fails, your rating stays in Astra.</p>
+                  </details>
+                  {ratingFileFailures.length > 0 && <details className="settings-rating-details">
+                    <summary>{ratingFileFailures.length} file(s) could not be updated</summary>
+                    <p>Your ratings are saved in Astra.</p>
+                    <ul>{ratingFileFailures.map(failure => <li key={failure.path}>
+                      {failure.path}: {failure.message}
+                    </li>)}</ul>
+                  </details>}
                 </div>
               </div>
               <div className="settings-card">

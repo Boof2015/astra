@@ -7,6 +7,16 @@ export interface TrackRatingEntry {
   updated_at: number
 }
 
+export interface RatingPreferences {
+  enabled: boolean
+  writeToFiles: boolean
+}
+
+export interface RatingEditResult {
+  filesWritten: string[]
+  fileFailures: Array<{ path: string; message: string }>
+}
+
 /**
  * Normalizes a rating to a half-star step in [0.5, 5], or null for anything
  * unratable. Half steps are exactly representable in IEEE754, so normalized

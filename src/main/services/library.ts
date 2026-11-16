@@ -73,7 +73,9 @@ import {
   type DynamicPlaylistTextField,
   type PlaylistKind
 } from '../../shared/playlists/dynamicPlaylist'
-import { normalizeTrackRating, type TrackRatingEntry } from '../../shared/ratings/trackRating'
+import { normalizeTrackRating, type TrackRatingEntry, type RatingPreferences, type RatingEditResult } from '../../shared/ratings/trackRating'
+import { extractRatingTag } from '../utils/ratingTags'
+import { writeRatingToFile } from './ratingFileWriter'
 import type { ProviderSyncRef, ProviderSyncTrack, ProviderSyncField, ProviderSyncValue } from '../../types/providerSync'
 import {
   LISTENING_STATS_TRANSFER_VERSION,
@@ -1016,6 +1018,8 @@ let artworkDir: string = ''
 let playlistCoverDir: string = ''
 let artistImageDir: string = ''
 let replayGainScanEnabled: boolean = true
+let ratingPreferences: RatingPreferences = { enabled: false, writeToFiles: false }
+const RATING_PREFERENCES_KEY = 'rating-preferences-v1'
 const SCAN_PARALLEL_MIN_FILES = 250
 const SCAN_PARALLEL_MIN_WORKERS = 2
 const SCAN_PARALLEL_MAX_WORKERS = 4
@@ -2878,6 +2882,12 @@ export async function initDatabase(): Promise<void> {
       updated_at INTEGER NOT NULL
     )
   `)
+  // A separate row survives an explicit clear. No row means the file may supply
+  // the rating. Like track_ratings, this survives temporary track deletion.
+  db.run(`CREATE TABLE IF NOT EXISTS track_rating_overrides (
+    track_path TEXT PRIMARY KEY NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`)
 
   // Play counts broken down by the install that produced them, so stats imported from
   // another machine ADD to the local count instead of one overwriting the other, while
@@ -3413,6 +3423,16 @@ export async function initDatabase(): Promise<void> {
     )
   `)
 
+  if (getAppMeta('rating-origins-migrated-v1') !== '1') {
+    db.run('INSERT OR IGNORE INTO track_rating_overrides SELECT track_path, updated_at FROM track_ratings')
+    db.run('INSERT OR REPLACE INTO app_meta (key, value, updated_at) VALUES (?, ?, ?)', ['rating-origins-migrated-v1', '1', Date.now()])
+  }
+  ratingPreferences = { enabled: false, writeToFiles: false }
+  try {
+    const stored = JSON.parse(getAppMeta(RATING_PREFERENCES_KEY) ?? 'null')
+    if (stored) ratingPreferences = { enabled: stored.enabled === true, writeToFiles: stored.writeToFiles === true }
+  } catch { /* A malformed preference never grants file-write permission. */ }
+
   db.run(`
     CREATE TABLE IF NOT EXISTS home_playback_sources (
       source_key TEXT PRIMARY KEY NOT NULL,
@@ -3501,6 +3521,26 @@ export function closeDatabase(): void {
 
 export function setReplayGainScanEnabled(enabled: boolean): void {
   replayGainScanEnabled = Boolean(enabled)
+}
+
+export function getRatingPreferences(): RatingPreferences {
+  return { ...ratingPreferences }
+}
+
+export async function initializeRatingPreferences(legacyEnabled: unknown): Promise<RatingPreferences> {
+  if (getAppMeta(RATING_PREFERENCES_KEY) === null) {
+    await setRatingPreferences({ enabled: legacyEnabled === true, writeToFiles: false })
+  }
+  return getRatingPreferences()
+}
+
+export async function setRatingPreferences(value: RatingPreferences): Promise<RatingPreferences> {
+  if (!value || typeof value.enabled !== 'boolean' || typeof value.writeToFiles !== 'boolean') {
+    throw new Error('Invalid rating preferences.')
+  }
+  await setAppMeta(RATING_PREFERENCES_KEY, JSON.stringify(value))
+  ratingPreferences = { enabled: value.enabled, writeToFiles: value.writeToFiles }
+  return getRatingPreferences()
 }
 
 export function getAppMeta(key: string): string | null {
@@ -4068,6 +4108,7 @@ function deleteTrackRelatedRows(trackPaths: string[]): void {
     db.run(`DELETE FROM playlist_tracks WHERE track_path IN (${placeholders})`, chunk)
     db.run(`DELETE FROM favorites WHERE track_path IN (${placeholders})`, chunk)
     db.run(`DELETE FROM track_ratings WHERE track_path IN (${placeholders})`, chunk)
+    db.run(`DELETE FROM track_rating_overrides WHERE track_path IN (${placeholders})`, chunk)
     db.run(`DELETE FROM ${PLAY_ORIGIN_TABLE} WHERE track_path IN (${placeholders})`, chunk)
     db.run(`DELETE FROM recently_played WHERE track_path IN (${placeholders})`, chunk)
     db.run(`DELETE FROM track_metadata_overrides WHERE track_path IN (${placeholders})`, chunk)
@@ -4081,6 +4122,7 @@ function deleteTrackRelatedRowsByPathPattern(trackPathPattern: string): void {
   db.run('DELETE FROM playlist_tracks WHERE track_path LIKE ?', [trackPathPattern])
   db.run('DELETE FROM favorites WHERE track_path LIKE ?', [trackPathPattern])
   db.run('DELETE FROM track_ratings WHERE track_path LIKE ?', [trackPathPattern])
+  db.run('DELETE FROM track_rating_overrides WHERE track_path LIKE ?', [trackPathPattern])
   db.run(`DELETE FROM ${PLAY_ORIGIN_TABLE} WHERE track_path LIKE ?`, [trackPathPattern])
   db.run('DELETE FROM recently_played WHERE track_path LIKE ?', [trackPathPattern])
   db.run('DELETE FROM track_metadata_overrides WHERE track_path LIKE ?', [trackPathPattern])
@@ -4097,6 +4139,7 @@ const UNIQUE_TRACK_PATH_KEYED_TABLES = [
   'lyrics_track_overrides',
   'track_loudness',
   'track_ratings',
+  'track_rating_overrides',
   'favorites'
 ] as const
 
@@ -4109,6 +4152,11 @@ function moveTrackChildRows(oldPath: string, newPath: string): void {
   // Every playlist row is an occurrence, so carry all of them to the repaired
   // path even when the target track already appears in the same playlist.
   db.run('UPDATE playlist_tracks SET track_path = ? WHERE track_path = ?', [newPath, oldPath])
+  // Move ownership together with its value (including an explicit clear).
+  // A newly scanned tag rating must not outrank an Astra edit at the old path.
+  db.run(`DELETE FROM track_ratings WHERE track_path = ?
+    AND EXISTS (SELECT 1 FROM track_rating_overrides WHERE track_path = ?)
+    AND NOT EXISTS (SELECT 1 FROM track_rating_overrides WHERE track_path = ?)`, [newPath, oldPath, newPath])
   for (const table of UNIQUE_TRACK_PATH_KEYED_TABLES) {
     db.run(`UPDATE OR IGNORE ${table} SET track_path = ? WHERE track_path = ?`, [newPath, oldPath])
     // Leftovers exist only when the target path already had a row (PK/UNIQUE
@@ -7535,6 +7583,7 @@ export async function resetMappedFoldersData(): Promise<{ clearedFolders: number
   db.run('DELETE FROM recently_played')
   db.run('DELETE FROM favorites')
   db.run('DELETE FROM track_ratings')
+  db.run('DELETE FROM track_rating_overrides')
   db.run(`DELETE FROM ${PLAY_ORIGIN_TABLE}`)
   db.run('DELETE FROM lyrics_cache')
   db.run('DELETE FROM lyrics_track_overrides')
@@ -7560,6 +7609,7 @@ export async function factoryResetLibraryData(): Promise<void> {
   db.run('DELETE FROM recently_played')
   db.run('DELETE FROM favorites')
   db.run('DELETE FROM track_ratings')
+  db.run('DELETE FROM track_rating_overrides')
   db.run(`DELETE FROM ${PLAY_ORIGIN_TABLE}`)
   db.run('DELETE FROM lyrics_cache')
   db.run('DELETE FROM lyrics_track_overrides')
@@ -7568,6 +7618,7 @@ export async function factoryResetLibraryData(): Promise<void> {
   db.run('DELETE FROM folders')
   db.run('DELETE FROM artist_images')
   db.run('DELETE FROM app_meta')
+  ratingPreferences = { enabled: false, writeToFiles: false }
 
   await clearArtworkCacheDirectory()
   await clearPlaylistCoverDirectory()
@@ -7936,6 +7987,26 @@ export async function scanFolder(
 
   const scanWorkerCount = resolveScanWorkerCount(files.length)
 
+  // Lazily prepare only after the normal scan decision selected a file. Rating
+  // support must never add I/O or change classifyIncrementalTrackScan's fast path.
+  let importRating: ReturnType<LibrarySqliteDatabase['prepareRun']> | undefined
+  let clearImportedRating: ReturnType<LibrarySqliteDatabase['prepareRun']> | undefined
+  const pendingTagRatings: Array<[string, number | null, number]> = []
+  const persistTagRating = (path: string, rating: number | null | undefined, now: number): void => {
+    if (!db || !ratingPreferences.enabled || rating === undefined) return
+    if (rating === null) {
+      clearImportedRating ??= db.prepareRun(`DELETE FROM track_ratings WHERE track_path = ?
+        AND NOT EXISTS (SELECT 1 FROM track_rating_overrides WHERE track_path = ?)`, { affectsLibrary: false })
+      clearImportedRating([path, path])
+    } else {
+      importRating ??= db.prepareRun(`INSERT INTO track_ratings (track_path, rating, updated_at)
+        SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM track_rating_overrides WHERE track_path = ?)
+        ON CONFLICT(track_path) DO UPDATE SET rating = excluded.rating, updated_at = excluded.updated_at
+        WHERE track_ratings.rating != excluded.rating`, { affectsLibrary: false })
+      importRating([path, rating, now, path])
+    }
+  }
+
   const processingStartedAt = diagnosticsEnabled ? libraryDiagnosticNow() : 0
   await runWithConcurrency(files, scanWorkerCount, async (filePath) => {
     try {
@@ -8032,6 +8103,7 @@ export async function scanFolder(
         ])
         added++
       }
+      if (metadata.rating !== undefined && ratingPreferences.enabled) pendingTagRatings.push([filePath, metadata.rating, now])
     } catch (err: unknown) {
       if (isLibraryScanCancelledError(err)) {
         throw err
@@ -8050,6 +8122,17 @@ export async function scanFolder(
   const processingWallMs = diagnosticsEnabled ? libraryDiagnosticNow() - processingStartedAt : 0
 
   throwIfScanCancelled(signal)
+  if (pendingTagRatings.length && db) {
+    const ownsTransaction = !db.inTransaction
+    if (ownsTransaction) beginLibraryWriteTransaction()
+    try {
+      for (const [path, rating, now] of pendingTagRatings) persistTagRating(path, rating, now)
+      if (ownsTransaction) commitLibraryWriteTransaction()
+    } catch (error) {
+      if (ownsTransaction) rollbackLibraryWriteTransaction()
+      throw error
+    }
+  }
   if (added > 0) {
     reconcileMissingTrackReferencesByMetadata()
   }
@@ -8597,6 +8680,7 @@ async function resolveCodecMetadata(
 
 // Extract metadata from audio file
 interface ExtractedTrackMetadata {
+  rating?: number | null
   title: string
   artist: string
   artistNamesJson: string | null
@@ -8873,6 +8957,7 @@ async function extractMetadata(
 
   return {
     title: common.title || fileName,
+    rating: ratingPreferences.enabled ? extractRatingTag(metadata) : undefined,
     artist: artistDisplay,
     artistNamesJson: parsedArtistNames.length > 1 ? serializeArtistNames(parsedArtistNames) : null,
     album: common.album || 'Unknown Album',
@@ -10049,6 +10134,10 @@ export async function setTrackRatingForPaths(
   ))
   if (uniqueTrackPaths.length === 0) return 0
 
+  if (rating !== null && normalizeTrackRating(rating) === null) throw new Error('Rating must be between 0.5 and 5 in half-star steps.')
+  const markOverride = db.prepareRun('INSERT OR REPLACE INTO track_rating_overrides (track_path, updated_at) VALUES (?, ?)', { affectsLibrary: false })
+  for (const path of uniqueTrackPaths) markOverride([path, Date.now()])
+
   let changed = 0
   if (rating === null) {
     for (const trackPath of uniqueTrackPaths) {
@@ -10071,10 +10160,31 @@ export async function setTrackRatingForPaths(
     }
   }
 
-  if (options.persist !== false && changed > 0) {
+  if (options.persist !== false) {
     await saveDatabase()
   }
   return changed
+}
+
+// Only explicit UI edits enter this path. Imports, provider sync and resets use
+// the database-only setter and cannot accidentally acquire file-write behavior.
+export async function editTrackRatings(trackPaths: string[], rating: number | null): Promise<RatingEditResult> {
+  const result: RatingEditResult = { filesWritten: [], fileFailures: [] }
+  await setTrackRatingForPaths(trackPaths, rating)
+  if (!db || !ratingPreferences.enabled || !ratingPreferences.writeToFiles) return result
+  for (const path of new Set(trackPaths.map(path => path.trim()))) {
+    if (!db.get("SELECT 1 FROM tracks WHERE path = ? AND source_type = 'local'", [path])) continue
+    try {
+      await writeRatingToFile(path, rating === null ? null : normalizeTrackRating(rating), () => {
+        const current = db?.get<{ rating: number }>('SELECT rating FROM track_ratings WHERE track_path = ?', [path])
+        return ratingPreferences.enabled && ratingPreferences.writeToFiles && (current?.rating ?? null) === (rating === null ? null : normalizeTrackRating(rating))
+      })
+      result.filesWritten.push(path)
+    } catch (error) {
+      result.fileFailures.push({ path, message: error instanceof Error ? error.message : 'Could not write the rating.' })
+    }
+  }
+  return result
 }
 
 export async function resetAllTrackRatings(): Promise<number> {
@@ -10082,6 +10192,7 @@ export async function resetAllTrackRatings(): Promise<number> {
   // Count first: the run() wrapper reports changes: 0 for parameterless
   // statements (they go through exec).
   const cleared = readCount('SELECT COUNT(*) FROM track_ratings')
+  db.run('INSERT OR REPLACE INTO track_rating_overrides (track_path, updated_at) SELECT track_path, ? FROM track_ratings', [Date.now()])
   db.run('DELETE FROM track_ratings')
   if (cleared > 0) {
     await saveDatabase()
@@ -11591,6 +11702,8 @@ function applyListeningCountsSection(
     `, chunk.flat())
   }
   result.ratingsApplied = ratingRows.length
+  const markImportedRating = db.prepareRun('INSERT OR REPLACE INTO track_rating_overrides (track_path, updated_at) VALUES (?, ?)', { affectsLibrary: false })
+  for (const [path, , updatedAt] of ratingRows) markImportedRating([path, updatedAt])
 
   const favoriteRows: Array<[string, number]> = []
   const insertedFavoritePaths: string[] = []

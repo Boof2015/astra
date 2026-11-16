@@ -20656,6 +20656,54 @@ html.playlist-context-backward::view-transition-new(playlist-context-surface) {
   border-top: 1px solid rgba(var(--tint), 0.06);
 }
 
+.settings-rating-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-rating-description,
+.settings-rating-details {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-readable-muted, rgba(var(--tint), 0.38));
+}
+
+.settings-rating-details {
+  padding: 10px 14px;
+  overflow-wrap: anywhere;
+}
+
+.settings-rating-details + .settings-rating-details {
+  border-top: 1px solid rgba(var(--tint), 0.06);
+}
+
+.settings-rating-details summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.settings-rating-details summary:hover {
+  color: var(--text-primary);
+}
+
+.settings-rating-details summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+
+.settings-rating-details p {
+  max-width: 72ch;
+  margin: 8px 0 0;
+}
+
+.settings-rating-details ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
 .analyzer-profile-panel {
   margin-top: 12px;
 }

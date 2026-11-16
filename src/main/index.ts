@@ -10494,6 +10494,9 @@ ipcMain.handle('library:getTrackRatings', () => {
   return library.getTrackRatingEntries()
 })
 
+ipcMain.handle('library:getRatingPreferences', (_event, legacyEnabled: unknown) => library.initializeRatingPreferences(legacyEnabled))
+ipcMain.handle('library:setRatingPreferences', (_event, preferences) => library.setRatingPreferences(preferences))
+
 ipcMain.handle('library:setTrackRating', async (_event, trackPaths: string[], rating: number | null) => {
   if (!Array.isArray(trackPaths) || trackPaths.some(path => typeof path !== 'string')) throw new Error('Invalid track selection.')
   if (rating !== null && trackPaths.some(path => path.startsWith('subsonic://'))
@@ -10504,7 +10507,7 @@ ipcMain.handle('library:setTrackRating', async (_event, trackPaths: string[], ra
     if (source && providerStateSync.enabled(source)) await providerStateSync.edit(source, path, 'rating', rating)
     else local.push(path)
   }
-  await library.setTrackRatingForPaths(local, rating)
+  return library.editTrackRatings(local, rating)
 })
 
 ipcMain.handle('library:resetTrackRatings', async () => {

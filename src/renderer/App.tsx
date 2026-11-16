@@ -478,6 +478,7 @@ function App() {
         }
 
         const libraryStore = useLibraryStore.getState()
+        await useRatingsStore.getState().loadPreferences()
         void useRatingsStore.getState().loadRatings()
         await libraryStore.loadLibrary()
         if (sessionSnapshot?.library) {
@@ -516,6 +517,12 @@ function App() {
     const unsubscribeBackfill = window.electronAPI.library.onAudioMetadataBackfillComplete(() => {
       void useLibraryStore.getState().loadLibrary()
     })
+    const unsubscribeScanRatings = useLibraryStore.subscribe((state, previous) => {
+      if (previous.isScanning && !state.isScanning && useRatingsStore.getState().enabled) {
+        void useRatingsStore.getState().loadRatings()
+        void usePlaylistStore.getState().refreshSelectedPlaylist()
+      }
+    })
     // A mobile LAN sync mutates favorites/playlists in the main process.
     const unsubscribeExternalLibraryMutation = window.electronAPI.library.onExternalLibraryMutation(() => {
       void useLibraryStore.getState().loadFavorites()
@@ -537,6 +544,7 @@ function App() {
       useAudioSettingsStore.getState().stopDeviceMonitoring()
       unsubscribeFileCreatedAtBackfill()
       unsubscribeBackfill()
+      unsubscribeScanRatings()
       unsubscribeExternalLibraryMutation()
       unsubscribeRemoteCatalogChanged()
       unsubscribeProviderSync()

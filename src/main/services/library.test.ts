@@ -3,8 +3,9 @@ import { copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, utimes, writeFile
 import { tmpdir } from 'os'
 import { join, relative } from 'path'
 import test from 'node:test'
+import { updateFile } from 'music-metadata'
 import { pathToFileURL } from 'url'
-import { createRequire } from 'module'
+import { createRequire, syncBuiltinESMExports } from 'module'
 import { createHash } from 'node:crypto'
 import * as library from './library.ts'
 import { ProviderStateSync } from './providerStateSync.ts'
@@ -3574,6 +3575,173 @@ test('dynamic playlist date filters evaluate fractional-day rolling cutoffs', as
   } finally {
     Date.now = originalDateNow
   }
+})
+
+test('rating import never invalidates incremental skips, even immediately after enabling', async t => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => library.setReplayGainScanEnabled(true))
+  const music = join(dir, 'music')
+  await mkdir(music)
+  const path = join(music, 'rated.wav')
+  const unrated = join(music, 'unrated.wav')
+  await writeTaggedWavFixture(path, 'Rated', 'Artist')
+  await writeTaggedWavFixture(unrated, 'Unrated', 'Artist')
+  await updateFile(path, { native: { 'TXXX:FMPS_RATING': '0.9' } })
+  const original = await readFile(path)
+  await library.scanFolder(music)
+  assert.deepEqual(library.getTrackRatingEntries(), [])
+  await library.setRatingPreferences({ enabled: true, writeToFiles: true })
+  for (let i = 0; i < 3; i++) {
+    const scan = await library.scanFolder(music, undefined, { diagnostics: true })
+    assert.equal(scan.diagnostics.metadataParsedFileCount, 0)
+    assert.equal(scan.diagnostics.skippedKnownFileCount, 2)
+  }
+  assert.deepEqual(library.getTrackRatingEntries(), [])
+  const force = await library.scanFolder(music, undefined, { mode: 'force', diagnostics: true })
+  assert.equal(force.diagnostics.metadataParsedFileCount, 2)
+  assert.equal(library.getTrackRatingEntries()[0].rating, 4.5)
+  const changedAt = library.getTrackRatingEntries()[0].updated_at
+  await library.scanFolder(music, undefined, { mode: 'force' })
+  assert.equal(library.getTrackRatingEntries()[0].updated_at, changedAt)
+  assert.deepEqual(await readFile(path), original, 'even with writing enabled, scanning never edits files')
+  const playlist = library.previewDynamicPlaylist({
+    version: 1, conditions: [{ kind: 'numeric', field: 'rating', operator: 'gte', value: 4 }],
+    sort: { field: 'rating', direction: 'desc' }, limit: null
+  })
+  assert.equal(playlist.tracks.length, 1)
+})
+
+test('tag ratings follow scanned changes while Astra edits and clears survive rescans and restarts', async t => {
+  const dir = await setupEmptyLibrary(t)
+  const music = join(dir, 'music')
+  await mkdir(music)
+  const path = join(music, 'rated.wav')
+  await writeTaggedWavFixture(path, 'Rated', 'Artist')
+  await updateFile(path, { native: { 'TXXX:FMPS_RATING': '0.8' } })
+  await library.setRatingPreferences({ enabled: true, writeToFiles: false })
+  await library.scanFolder(music)
+  assert.equal(library.getTrackRatingEntries()[0].rating, 4)
+  await updateFile(path, { native: { 'TXXX:FMPS_RATING': '0.4' } })
+  await library.scanFolder(music, undefined, { mode: 'force' })
+  assert.equal(library.getTrackRatingEntries()[0].rating, 2)
+  await updateFile(path, { native: { 'TXXX:FMPS_RATING': null } })
+  await library.scanFolder(music, undefined, { mode: 'force' })
+  assert.deepEqual(library.getTrackRatingEntries(), [])
+  await updateFile(path, { native: { 'TXXX:FMPS_RATING': '0.4' } })
+  await library.setTrackRatingForPaths([path], 5)
+  await library.scanFolder(music, undefined, { mode: 'force' })
+  assert.equal(library.getTrackRatingEntries()[0].rating, 5)
+  await library.setTrackRatingForPaths([path], null)
+  library.closeDatabase()
+  await library.initDatabase()
+  assert.deepEqual(library.getRatingPreferences(), { enabled: true, writeToFiles: false })
+  await library.scanFolder(music, undefined, { mode: 'force' })
+  assert.deepEqual(library.getTrackRatingEntries(), [])
+})
+
+test('rating reset retains clear markers and never invokes file writes', async t => {
+  const dir = await setupEmptyLibrary(t)
+  const music = join(dir, 'music')
+  await mkdir(music)
+  const path = join(music, 'rated.wav')
+  await writeTaggedWavFixture(path, 'Rated', 'Artist')
+  await updateFile(path, { native: { 'TXXX:FMPS_RATING': '0.8' } })
+  const original = await readFile(path)
+  await library.setRatingPreferences({ enabled: true, writeToFiles: true })
+  await library.scanFolder(music)
+  assert.equal(await library.resetAllTrackRatings(), 1)
+  await library.scanFolder(music, undefined, { mode: 'force' })
+  assert.deepEqual(library.getTrackRatingEntries(), [])
+  assert.deepEqual(await readFile(path), original)
+  const result = await library.editTrackRatings([path, 'subsonic://test/one'], 3)
+  assert.equal(result.fileFailures.length, 1, 'only the local unsupported WAV should attempt a write')
+  assert.equal(result.fileFailures[0].path, path)
+  assert.equal(library.getTrackRatingEntries().find(row => row.track_path === path)?.rating, 3)
+})
+
+test('rating preferences migrate the legacy UI flag once without granting write permission', async t => {
+  await setupEmptyLibrary(t)
+  assert.deepEqual(await library.initializeRatingPreferences(true), { enabled: true, writeToFiles: false })
+  assert.deepEqual(await library.initializeRatingPreferences(false), { enabled: true, writeToFiles: false })
+  await assert.rejects(library.setRatingPreferences({ enabled: true, writeToFiles: 'true' } as never))
+})
+
+test('rating import adds no filesystem operations to unchanged or forced scans', async t => {
+  const dir = await setupEmptyLibrary(t)
+  library.setReplayGainScanEnabled(false)
+  t.after(() => library.setReplayGainScanEnabled(true))
+  const music = join(dir, 'music')
+  await mkdir(music)
+  const path = join(music, 'unrated.wav')
+  await writeTaggedWavFixture(path, 'Unrated', 'Artist')
+  await library.scanFolder(music)
+  const fs = require('node:fs/promises')
+  const keys = ['open', 'stat', 'readFile', 'access', 'readdir'] as const
+  const originals = Object.fromEntries(keys.map(key => [key, fs[key]]))
+  let counts: Record<string, number> = {}
+  try {
+    for (const key of keys) fs[key] = (...args: unknown[]) => {
+      counts[key] = (counts[key] ?? 0) + 1
+      return originals[key](...args)
+    }
+    syncBuiltinESMExports()
+    for (const mode of ['incremental', 'force'] as const) {
+      await library.setRatingPreferences({ enabled: false, writeToFiles: false })
+      counts = {}
+      await library.scanFolder(music, undefined, { mode })
+      const disabled = { ...counts }
+      await library.setRatingPreferences({ enabled: true, writeToFiles: true })
+      counts = {}
+      await library.scanFolder(music, undefined, { mode })
+      assert.deepEqual(counts, disabled, `${mode} must perform the same filesystem operations with ratings enabled`)
+    }
+  } finally {
+    for (const key of keys) fs[key] = originals[key]
+    syncBuiltinESMExports()
+  }
+})
+
+test('legacy ratings and moved explicit clears retain ownership', async t => {
+  const { userDataDir, musicDir, trackPath } = await setupCasingRenameFixture(t)
+  await updateFile(trackPath, { native: { 'TXXX:FMPS_RATING': '0.4' } })
+  withDirectLibraryDb(userDataDir, direct => {
+    direct.prepare('DELETE FROM app_meta WHERE key = ?').run('rating-origins-migrated-v1')
+    direct.prepare('INSERT INTO track_ratings (track_path, rating, updated_at) VALUES (?, ?, ?)').run(trackPath, 5, 1)
+  })
+  library.closeDatabase()
+  await library.initDatabase()
+  await library.setRatingPreferences({ enabled: true, writeToFiles: false })
+  await library.scanFolder(musicDir, undefined, { mode: 'force' })
+  assert.equal(library.getTrackRatingEntries()[0].rating, 5)
+  await library.setTrackRatingForPaths([trackPath], null)
+  const renamed = join(musicDir, 'ARTIST')
+  await rename(join(musicDir, 'artist'), renamed)
+  await library.scanFolder(musicDir, undefined, { mode: 'force' })
+  assert.deepEqual(library.getTrackRatingEntries(), [])
+  withDirectLibraryDb(userDataDir, direct => {
+    assert.ok(direct.prepare('SELECT 1 FROM track_rating_overrides WHERE track_path = ?').get(join(renamed, 'track.wav')))
+  })
+})
+
+test('path recovery carries an explicit clear over a newly imported tag rating', async t => {
+  const dir = await setupEmptyLibrary(t)
+  const music = join(dir, 'music')
+  await mkdir(music)
+  const oldPath = join(music, 'old.wav')
+  const newPath = join(music, 'new.wav')
+  for (const path of [oldPath, newPath]) {
+    await writeTaggedWavFixture(path, 'Rated', 'Artist')
+    await updateFile(path, { native: { 'TXXX:FMPS_RATING': '0.8' } })
+  }
+  await library.setRatingPreferences({ enabled: true, writeToFiles: false })
+  await library.scanFolder(music)
+  await library.setTrackRatingForPaths([oldPath], null)
+  await library.mergeLocalDuplicateTracks(newPath, [oldPath])
+  assert.deepEqual(library.getTrackRatingEntries(), [])
+  withDirectLibraryDb(dir, direct => {
+    assert.ok(direct.prepare('SELECT 1 FROM track_rating_overrides WHERE track_path = ?').get(newPath))
+  })
 })
 
 test('track ratings persist, overwrite, remove, and validate values', async (t) => {

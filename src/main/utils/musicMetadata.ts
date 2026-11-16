@@ -53,6 +53,7 @@ export function musicMetadataFromFfprobe(probe: FfprobeAudioMetadata): IAudioMet
     },
     // Preserve tags for ReplayGain and other consumers of native metadata.
     native: { ffprobe: Object.entries(tags).map(([id, value]) => ({ id, value })) },
+    nativeTyped: {},
     quality: { warnings: [{ message: 'Metadata recovered with ffprobe after the primary parser failed.' }] }
   }
 }

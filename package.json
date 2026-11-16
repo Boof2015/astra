@@ -89,7 +89,7 @@
     "bonjour-service": "^1.4.0",
     "ffmpeg-static": "^5.2.0",
     "ffmpeg-ffprobe-static": "6.1.2-rc.1",
-    "music-metadata": "^11.12.3",
+    "music-metadata": "12.5.0",
     "node-addon-api": "^8.7.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
