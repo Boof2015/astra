@@ -16,6 +16,7 @@ import type {
   LyricsTrackOverrideEntry
 } from './library.ts'
 import type { LyricsPayload, LyricsTrackQuery } from '../../types/lyrics.ts'
+import { parseSubsonicLyrics, type ServerLyricsResolver } from './lyricsSubsonic.ts'
 
 function makeQuery(overrides: Partial<LyricsTrackQuery> = {}): LyricsTrackQuery {
   return {
@@ -102,21 +103,135 @@ function createProvider(
 }
 
 function createService(options: {
+  enabled?: boolean
   libraryApi?: LyricsServiceLibraryApi
+  serverResolver?: ServerLyricsResolver
   embeddedResolver?: (trackPath: string) => Promise<LyricsPayload | null>
   xlrcdbProvider: LyricsOnlineLookupProvider
   lrclibProvider: LyricsOnlineLookupProvider
 }): LyricsService {
   return new LyricsService({
-    enabled: true,
+    enabled: options.enabled ?? true,
     appVersion: '0.6.1-beta',
     libraryApi: options.libraryApi ?? createLibraryApi(),
     sidecarLookup: async () => null,
     embeddedResolver: options.embeddedResolver ?? (async () => null),
+    serverResolver: options.serverResolver,
     xlrcdbProvider: options.xlrcdbProvider,
     lrclibProvider: options.lrclibProvider
   })
 }
+
+const serverQuery = makeQuery({ path: 'subsonic://1/track/song' })
+const serverPayload = parseSubsonicLyrics([{ synced: false, line: [{ value: 'Server lyrics' }] }])!
+
+test('server lyrics beat external provider caches, including remembered misses', async () => {
+  for (const cache of [null, makeCacheEntry('xlrcdb', 'XLRCDB'), makeCacheEntry('lrclib', 'LRCLIB'), makeCacheNotFoundEntry('xlrcdb'), makeCacheNotFoundEntry('lrclib')]) {
+    const upserts: LyricsCacheUpsertInput[] = []
+    let serverCalls = 0
+    const service = createService({
+      libraryApi: createLibraryApi({ cache, upserts }),
+      serverResolver: { resolve: () => ({ isCurrent: () => true, lookup: async () => { serverCalls++; return serverPayload } }) },
+      xlrcdbProvider: createProvider([]), lrclibProvider: createProvider([])
+    })
+    const result = await service.getForTrack(serverQuery)
+    assert.equal(result.status === 'hit' && result.lyrics.source, 'server')
+    assert.equal(serverCalls, 1)
+    assert.equal(upserts[0]?.source, 'server')
+    assert.equal(upserts[0]?.provider, null)
+  }
+})
+
+test('server lyrics work with external lookup disabled and empty metadata; manual lyrics still win', async () => {
+  let serverCalls = 0
+  const api = createLibraryApi()
+  const service = createService({
+    enabled: false, libraryApi: api,
+    serverResolver: { resolve: () => ({ isCurrent: () => true, lookup: async () => { serverCalls++; return serverPayload } }) },
+    xlrcdbProvider: createProvider([]), lrclibProvider: createProvider([])
+  })
+  const query = { ...serverQuery, title: '', artist: '' }
+  assert.equal((await service.getForTrack(query)).status, 'hit')
+  assert.equal(serverCalls, 1)
+  api.getLyricsTrackOverride = () => ({
+    trackPath: query.path, format: 'plain', plainLyrics: 'My lyrics', syncedLyrics: null,
+    syncedLines: [], syncOffsetMs: 0, updatedAt: 1
+  })
+  const result = await service.getForTrack(query)
+  assert.equal(result.status === 'hit' && result.lyrics.source, 'manual')
+  assert.equal(serverCalls, 1)
+})
+
+test('server miss or failure falls through XLRCDB then LRCLIB', async () => {
+  for (const fails of [false, true]) {
+    const order: string[] = []
+    const service = createService({
+      serverResolver: { resolve: () => ({ isCurrent: () => true, lookup: async () => {
+        order.push('server')
+        if (fails) throw new Error('Unavailable')
+        return null
+      } }) },
+      xlrcdbProvider: { lookup: async () => { order.push('xlrcdb'); return { status: 'not_found' } } },
+      lrclibProvider: { lookup: async () => { order.push('lrclib'); return { status: 'hit', lyrics: makePayload('lrclib', 'fallback') } } }
+    })
+    const result = await service.getForTrack(serverQuery)
+    assert.deepEqual(order, ['server', 'xlrcdb', 'lrclib'])
+    assert.equal(result.status === 'hit' && result.lyrics.source, 'lrclib')
+    assert.equal(service.getStatus().lastError, null)
+  }
+})
+
+test('server caches are reused only for active sources, and refresh fetches again without double-applying offsets', async () => {
+  const payload = parseSubsonicLyrics([{ synced: true, offset: 200, line: [{ start: 2000, value: 'Timed' }] }])!
+  const cache: LyricsCacheEntry = {
+    ...makeCacheEntry('lrclib', ''), ...payload, status: 'hit', source: 'server', provider: null
+  }
+  let active = true
+  const calls: Array<{ forceRefresh?: boolean }> = []
+  const api = createLibraryApi({ cache })
+  api.getLyricsTrackOverride = () => ({
+    trackPath: serverQuery.path, format: 'plain', plainLyrics: null, syncedLyrics: null,
+    syncedLines: [], syncOffsetMs: 300, updatedAt: 1
+  })
+  const service = createService({
+    enabled: false, libraryApi: api,
+    serverResolver: { resolve: () => active ? { isCurrent: () => active, lookup: async options => { calls.push(options); return payload } } : null },
+    xlrcdbProvider: createProvider([]), lrclibProvider: createProvider([])
+  })
+  const cached = await service.getForTrack(serverQuery)
+  assert.equal(cached.status === 'hit' && cached.cached, true)
+  assert.equal(cached.status === 'hit' && cached.lyrics.syncedLines[0].timestampMs, 2100)
+  assert.equal(calls.length, 0)
+  const fresh = await service.getForTrack(serverQuery, { forceRefresh: true })
+  assert.equal(fresh.status === 'hit' && fresh.cached, false)
+  assert.equal(fresh.status === 'hit' && fresh.lyrics.syncedLines[0].timestampMs, 2100)
+  assert.deepEqual(calls, [{ forceRefresh: true }])
+  active = false
+  assert.deepEqual(await service.getForTrack(serverQuery), { status: 'not_found', reason: 'online-disabled' })
+})
+
+test('a server response from a changed connection is neither displayed nor cached', async () => {
+  const upserts: LyricsCacheUpsertInput[] = []
+  let current = true
+  const service = createService({
+    enabled: false, libraryApi: createLibraryApi({ upserts }),
+    serverResolver: { resolve: () => ({ isCurrent: () => current, lookup: async () => { current = false; return serverPayload } }) },
+    xlrcdbProvider: createProvider([]), lrclibProvider: createProvider([])
+  })
+  assert.equal((await service.getForTrack(serverQuery)).status, 'not_found')
+  assert.equal(upserts.length, 0)
+})
+
+test('server failures are not persisted as misses and missing metadata does not start external searches', async () => {
+  const upserts: LyricsCacheUpsertInput[] = []
+  const service = createService({
+    libraryApi: createLibraryApi({ upserts }),
+    serverResolver: { resolve: () => ({ isCurrent: () => true, lookup: async () => { throw new Error('Timed out') } }) },
+    xlrcdbProvider: createProvider([]), lrclibProvider: createProvider([])
+  })
+  assert.equal((await service.getForTrack({ ...serverQuery, artist: '' })).status, 'not_found')
+  assert.equal(upserts.length, 0)
+})
 
 function asEmbeddedMetadata(
   metadata: unknown

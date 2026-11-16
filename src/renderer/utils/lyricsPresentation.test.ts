@@ -226,6 +226,8 @@ test('getSyncedLyricsGapProgress resolves calm progress through a gap row', () =
 
 test('getLyricsSourceLabel labels local LRC files', () => {
   assert.equal(getLyricsSourceLabel('lrc'), 'LRC File')
+  assert.equal(getLyricsSourceLabel('server', 'plain'), 'Server')
+  assert.equal(getLyricsSourceLabel('server', 'lrc'), 'Server')
 })
 
 test('getLyricsSourceLabel labels XLRC and manual XLRC sources', () => {

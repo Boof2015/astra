@@ -151,6 +151,7 @@ import {
 } from './services/parallaxSecurity'
 import { LastFmService, sanitizePendingScrobbles } from './services/lastFm'
 import { LyricsService } from './services/lyrics'
+import { SubsonicLyricsResolver } from './services/lyricsSubsonic'
 import { MemoryDiagnosticsService } from './services/memoryDiagnostics'
 import { LibraryDiagnosticsService } from './services/libraryDiagnostics'
 import { collectAppMemoryFootprint } from './services/appMemoryFootprint'
@@ -1783,10 +1784,22 @@ const lastFmService = new LastFmService({
   }
 })
 
+const serverLyricsResolver = new SubsonicLyricsResolver({
+  source: id => {
+    const source = library.getSubsonicSourceById(id)
+    return source ? {
+      binding: createHash('sha256').update(JSON.stringify([source.base_url, source.username, source.secret_encrypted, source.created_at])).digest('hex'),
+      enabled: source.enabled === 1
+    } : null
+  },
+  credentials: id => requireSubsonicSourceCredentials(id).connection
+})
+
 const lyricsService = new LyricsService({
   enabled: lyricsOnlineEnabled,
   appVersion: app.getVersion(),
   lrclibBaseUrl: lyricsLrclibBaseUrl,
+  serverResolver: serverLyricsResolver,
   onStatusChange: () => {
     broadcastLyricsStatus()
     const status = lyricsService.getStatus()
@@ -7185,6 +7198,7 @@ ipcMain.handle('subsonic:updateSource', async (_event, sourceIdValue: unknown, r
 
   if (input.baseUrl !== undefined || input.username !== undefined || input.password !== undefined || input.enabled !== undefined) {
     stratumConnections.invalidate(sourceId)
+    serverLyricsResolver.invalidate(sourceId)
   }
   const updated = await library.updateSubsonicSource(sourceId, updatePayload)
   if (input.enabled === false) {
@@ -7204,6 +7218,7 @@ ipcMain.handle('subsonic:deleteSource', async (_event, sourceIdValue: unknown, p
     throw new Error('Invalid Subsonic source id.')
   }
   const purgeTracks = Boolean(purgeTracksValue)
+  serverLyricsResolver.invalidate(sourceId)
   await stratumConnections.setEnabled(sourceId, false)
   await library.deleteSubsonicSource(sourceId, purgeTracks)
   stratumConnections.invalidate(sourceId)

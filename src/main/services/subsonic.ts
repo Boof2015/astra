@@ -545,6 +545,18 @@ export async function reportSubsonicScrobble(
   }, { ...options, retries: 0 })
 }
 
+/** Fetch the song's own lyrics, independent of the server's upstream lyric sources. */
+export async function getSubsonicLyrics(
+  config: SubsonicConnectionConfig, trackId: string,
+  options: SubsonicRequestOptions = {}
+): Promise<unknown> {
+  const response = await requestSubsonicJson(config, 'getLyricsBySongId', { id: trackId }, {
+    ...options, timeoutMs: options.timeoutMs ?? 5_000, retries: 0, maxResponseBytes: 1024 * 1024
+  })
+  const list = response.lyricsList
+  return list && typeof list === 'object' ? (list as Record<string, unknown>).structuredLyrics : undefined
+}
+
 export async function getSubsonicPlaybackCapabilities(
   config: SubsonicConnectionConfig, options: SubsonicRequestOptions = {}
 ): Promise<{ timeline: boolean; navidrome: boolean }> {

@@ -592,7 +592,7 @@ export interface FolderSubdirectoryEntry {
 }
 
 export type LyricsCacheStatus = 'hit' | 'not_found'
-export type LyricsCacheSource = 'embedded' | 'lrclib' | 'xlrcdb'
+export type LyricsCacheSource = 'embedded' | 'server' | 'lrclib' | 'xlrcdb'
 
 export interface LyricsCacheEntry {
   trackPath: string
@@ -3885,6 +3885,10 @@ export async function updateSubsonicSource(
     throw new Error('Failed to update Subsonic source.')
   }
 
+  if (next.base_url !== current.base_url || next.username !== current.username || next.secret_encrypted !== current.secret_encrypted) {
+    db.run('DELETE FROM lyrics_cache WHERE track_path LIKE ?', [`subsonic://${sourceId}/track/%`])
+  }
+
   if (options.persist !== false) {
     await saveDatabase()
   }
@@ -4303,6 +4307,7 @@ export async function mergeLocalDuplicateTracks(keepPath: string, removedPaths: 
 export async function deleteSubsonicSource(sourceId: number, purgeTracks: boolean): Promise<void> {
   if (!db) return
   const source = getSubsonicSourceById(sourceId)
+  db.run('DELETE FROM lyrics_cache WHERE track_path LIKE ?', [`subsonic://${sourceId}/track/%`])
 
   if (purgeTracks) {
     const scope = purgedTrackScope('subsonic', sourceId)
@@ -5053,7 +5058,7 @@ function normalizeLyricsCacheStatus(value: unknown): LyricsCacheStatus | null {
 }
 
 function normalizeLyricsCacheSource(value: unknown): LyricsCacheSource | null {
-  if (value === 'embedded' || value === 'lrclib' || value === 'xlrcdb') return value
+  if (value === 'embedded' || value === 'server' || value === 'lrclib' || value === 'xlrcdb') return value
   return null
 }
 

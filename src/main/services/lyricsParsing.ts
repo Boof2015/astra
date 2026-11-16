@@ -308,7 +308,8 @@ export function createLyricsPayload(
 ): LyricsPayload | null {
   const normalizedPlain = normalizeLyricsText(plainLyrics)
   const normalizedSynced = normalizeLyricsText(syncedLyrics)
-  const parsedSyncedLines = normalizedSynced && (format === 'lrc' || format === 'xlrc')
+  // Server lines are already structured; their text may contain literal LRC-looking markers.
+  const parsedSyncedLines = source !== 'server' && normalizedSynced && (format === 'lrc' || format === 'xlrc')
     ? parsePackageSyncedLines(
         normalizedSynced,
         format === 'xlrc' ? XLRC_PARSE_OPTIONS : LRC_PARSE_OPTIONS

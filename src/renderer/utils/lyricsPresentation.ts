@@ -44,10 +44,10 @@ export const DEFAULT_LYRICS_BODY_COPY: LyricsBodyCopy = {
   loadingMessage: 'Loading lyrics...',
   idleMessage: 'Lyrics are ready when a track is selected.',
   noReadableTextMessage: 'Lyrics were found, but no readable text is available.',
-  onlineDisabledMessage: 'No local or embedded lyrics found. Enable Online Lyrics Lookup in Settings to fetch from XLRCDB or LRCLIB.',
-  providerNotFoundMessage: 'No lyrics found on XLRCDB or LRCLIB for this track.',
+  onlineDisabledMessage: 'No local, embedded, or server-provided lyrics found. Enable Online Lyrics Lookup in Settings to fetch from XLRCDB or LRCLIB.',
+  providerNotFoundMessage: 'No lyrics found for this track.',
   providerUnavailableMessage: "Lyrics providers didn't respond in time. A retry may work.",
-  embeddedMissingMessage: 'No local or embedded lyrics found for this track.'
+  embeddedMissingMessage: 'No local, embedded, or server-provided lyrics found for this track.'
 }
 
 export const INFO_SIDEBAR_LYRICS_BODY_COPY: LyricsBodyCopy = {
@@ -57,6 +57,7 @@ export const INFO_SIDEBAR_LYRICS_BODY_COPY: LyricsBodyCopy = {
 
 export function getLyricsSourceLabel(source: LyricsSource, format?: LyricsFormat): string {
   if (source === 'embedded') return 'Embedded'
+  if (source === 'server') return 'Server'
   if (source === 'manual') return format === 'xlrc' ? 'Manual XLRC' : 'Manual'
   if (source === 'xlrc') return 'XLRC File'
   if (source === 'lrc') return 'LRC File'

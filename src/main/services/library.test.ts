@@ -208,6 +208,44 @@ async function setupSeededLibrary(t: test.TestContext): Promise<string> {
   return dir
 }
 
+test('server lyrics cache round-trips plain and synced payloads and follows connection changes', async t => {
+  await setupEmptyLibrary(t)
+  const source = await library.createSubsonicSource({
+    name: 'Lyrics source', base_url: 'https://music.example', username: 'listener', secret_encrypted: 'secret', enabled: 1
+  })
+  const path = `subsonic://${source.id}/track/song`
+  const otherPath = `subsonic://${source.id + 1}/track/song`
+  const cache = async (trackPath: string, synced = false): Promise<void> => {
+    await library.upsertLyricsCache({
+      trackPath, metadataSignature: 'lyrics-test', status: 'hit', source: 'server', provider: null,
+      plainLyrics: '夜空\n\n星の歌', syncedLyrics: synced ? '[00:01.250]夜空\n[00:02.000]\n[00:03.000]星の歌' : null,
+      syncedLines: synced ? [
+        { timestampMs: 1250, text: '夜空' }, { timestampMs: 2000, text: '', kind: 'silence' }, { timestampMs: 3000, text: '星の歌' }
+      ] : []
+    })
+  }
+  await cache(path)
+  assert.equal(library.getLyricsCache(path, 'lyrics-test')?.source, 'server')
+  assert.equal(library.getLyricsCache(path, 'lyrics-test')?.format, 'plain')
+  assert.equal(library.getLyricsCache(path, 'lyrics-test')?.provider, null)
+  assert.equal(library.getLyricsCache(path, 'lyrics-test')?.plainLyrics, '夜空\n\n星の歌')
+  await cache(path, true)
+  assert.equal(library.getLyricsCache(path, 'lyrics-test')?.format, 'lrc')
+  assert.deepEqual(library.getLyricsCache(path, 'lyrics-test')?.syncedLines[1], { timestampMs: 2000, text: '', kind: 'silence' })
+  await cache(otherPath)
+  await library.updateSubsonicSource(source.id, { name: 'Renamed', last_status: 'ok' })
+  assert.ok(library.getLyricsCache(path, 'lyrics-test'), 'name and status updates retain lyrics')
+  for (const change of [{ base_url: 'https://new.example' }, { username: 'another' }, { secret_encrypted: 'new-secret' }]) {
+    await library.updateSubsonicSource(source.id, change)
+    assert.equal(library.getLyricsCache(path, 'lyrics-test'), null)
+    assert.ok(library.getLyricsCache(otherPath, 'lyrics-test'), 'other servers are unaffected')
+    await cache(path)
+  }
+  await library.deleteSubsonicSource(source.id, false)
+  assert.equal(library.getLyricsCache(path, 'lyrics-test'), null)
+  assert.ok(library.getLyricsCache(otherPath, 'lyrics-test'))
+})
+
 async function setupLegacyPlaycountLibrary(t: test.TestContext): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'astra-library-playcount-migration-'))
   process.env.ASTRA_TEST_USER_DATA = dir

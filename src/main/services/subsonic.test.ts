@@ -3,11 +3,40 @@ import test from 'node:test'
 import {
   buildSubsonicArtworkHash,
   buildSubsonicStreamUrl,
+  getSubsonicLyrics,
   mapSongToCatalogTrack,
   parseSubsonicArtworkHash,
   syncSubsonicCatalog,
   type SubsonicCatalogSyncProgress
 } from './subsonic.ts'
+
+test('server lyrics use the authenticated song-ID endpoint without requesting enhanced lyrics', async t => {
+  const structuredLyrics = [{ synced: false, line: [{ value: 'Lyrics' }] }]
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+    const url = new URL(String(input))
+    assert.equal(url.pathname, '/music/rest/getLyricsBySongId.view')
+    assert.equal(url.searchParams.get('id'), 'song/id')
+    assert.equal(url.searchParams.get('u'), 'listener')
+    assert.ok(url.searchParams.get('t'))
+    assert.ok(url.searchParams.get('s'))
+    assert.equal(url.searchParams.get('f'), 'json')
+    assert.equal(url.searchParams.has('enhanced'), false)
+    return Response.json({ 'subsonic-response': { status: 'ok', lyricsList: { structuredLyrics } } })
+  })
+  assert.deepEqual(await getSubsonicLyrics({ baseUrl: 'https://music.example/music', username: 'listener', password: 'test' }, 'song/id'), structuredLyrics)
+})
+
+test('server lyrics time out without retrying', async t => {
+  let requests = 0
+  t.mock.method(globalThis, 'fetch', async (_input: unknown, options: RequestInit) => {
+    requests++
+    return new Promise<Response>((_resolve, reject) => {
+      options.signal!.addEventListener('abort', () => reject(new DOMException('Timed out', 'AbortError')), { once: true })
+    })
+  })
+  await assert.rejects(getSubsonicLyrics({ baseUrl: 'https://music.example', username: 'listener', password: 'test' }, 'song', { timeoutMs: 10, retries: 3 }))
+  assert.equal(requests, 1)
+})
 
 test('OpenSubsonic ReplayGain imports finite server values without inventing gains for missing tags', () => {
   const track = mapSongToCatalogTrack(7, { id: 'song', replayGain: { trackGain: -5.4, albumGain: 0 } }, null)!

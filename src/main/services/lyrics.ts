@@ -3,6 +3,7 @@ import * as mm from 'music-metadata'
 import type { IAudioMetadata } from 'music-metadata'
 import * as library from './library'
 import { lookupSidecarLyrics } from './lyricsSidecar'
+import type { ServerLyricsResolver } from './lyricsSubsonic'
 import {
   createLyricsPayload,
   normalizeLyricsText,
@@ -72,6 +73,7 @@ interface LyricsServiceOptions {
   libraryApi?: LyricsServiceLibraryApi
   sidecarLookup?: typeof lookupSidecarLyrics
   embeddedResolver?: typeof resolveEmbeddedLyrics
+  serverResolver?: ServerLyricsResolver
   xlrcdbProvider?: LyricsOnlineLookupProvider
   lrclibProvider?: LyricsOnlineLookupProvider
 }
@@ -305,6 +307,7 @@ export class LyricsService {
   private readonly libraryApi: LyricsServiceLibraryApi
   private readonly sidecarLookup: typeof lookupSidecarLyrics
   private readonly embeddedResolver: typeof resolveEmbeddedLyrics
+  private readonly serverResolver?: ServerLyricsResolver
   private readonly xlrcdb: LyricsOnlineLookupProvider
   private readonly lrclib: LyricsOnlineLookupProvider
   private readonly onStatusChange?: (status: LyricsStatus) => void
@@ -315,6 +318,7 @@ export class LyricsService {
     this.libraryApi = options.libraryApi ?? library
     this.sidecarLookup = options.sidecarLookup ?? lookupSidecarLyrics
     this.embeddedResolver = options.embeddedResolver ?? resolveEmbeddedLyrics
+    this.serverResolver = options.serverResolver
     this.xlrcdb = options.xlrcdbProvider ?? new XlrcdbLookupCoordinator(createXlrcdbClientConfig({
       requestTimeoutMs: options.requestTimeoutMs,
       now: options.now
@@ -334,7 +338,7 @@ export class LyricsService {
         enabled: false,
         provider: 'xlrcdb',
         lrclibBaseUrl: this.lrclibBaseUrl,
-        statusMessage: 'Online lyrics lookup is disabled. Astra will only use local lyrics and embedded lyrics.',
+        statusMessage: 'Online lyrics lookup is disabled. Astra will use local, embedded, and server-provided lyrics.',
         lastError: this.lastError
       }
     }
@@ -496,7 +500,7 @@ export class LyricsService {
     const album = normalizeLrclibMetadataText(query.album)
     const durationSeconds = normalizeDurationSeconds(query.durationSeconds) ?? undefined
 
-    if (!path || !title || !artist) {
+    if (!path) {
       return {
         status: 'not_found',
         reason: 'embedded-missing'
@@ -505,8 +509,8 @@ export class LyricsService {
 
     const normalizedQuery: LyricsTrackQuery = {
       path,
-      title,
-      artist,
+      title: title ?? '',
+      artist: artist ?? '',
       album: album ?? undefined,
       durationSeconds
     }
@@ -543,18 +547,39 @@ export class LyricsService {
       }
     }
 
-    if (!options.forceRefresh) {
-      const cached = this.libraryApi.getLyricsCache(path, metadataSignature)
-      if (cached) {
-        const shouldRefreshEmbedded = cached.source === 'embedded'
-          && hasLeakedEnhancedLrcMarkers(cached)
-        if (!shouldRefreshEmbedded) {
-          if (cached.source === 'lrclib' && this.enabled) {
-            lrclibCached = cached
-          } else {
-            const cachedResult = this.createLookupResultFromCache(cached, trackOffsetMs)
-            if (cachedResult) return cachedResult
-          }
+    const cached = options.forceRefresh ? null : this.libraryApi.getLyricsCache(path, metadataSignature)
+    const server = this.serverResolver?.resolve(path)
+    if (server) {
+      if (cached?.source === 'server' && server.isCurrent()) {
+        const result = this.createLookupResultFromCache(cached, trackOffsetMs)
+        if (result?.status === 'hit') {
+          this.setLastError(null)
+          return result
+        }
+      }
+      // Server failures are optional-source failures; continue through the usual fallback chain.
+      const payload = await server.lookup(options).catch(() => null)
+      if (payload && server.isCurrent()) {
+        await this.libraryApi.upsertLyricsCache({
+          trackPath: path, metadataSignature, status: 'hit', source: 'server', provider: null,
+          plainLyrics: payload.plainLyrics, syncedLyrics: payload.syncedLyrics, syncedLines: payload.syncedLines
+        })
+        if (server.isCurrent()) {
+          this.setLastError(null)
+          return { status: 'hit', lyrics: applyTrackOffsetToPayload(payload, trackOffsetMs), cached: false }
+        }
+      }
+    }
+
+    if (cached && cached.source !== 'server') {
+      const shouldRefreshEmbedded = cached.source === 'embedded'
+        && hasLeakedEnhancedLrcMarkers(cached)
+      if (!shouldRefreshEmbedded) {
+        if (cached.source === 'lrclib' && this.enabled) {
+          lrclibCached = cached
+        } else {
+          const cachedResult = this.createLookupResultFromCache(cached, trackOffsetMs)
+          if (cachedResult) return cachedResult
         }
       }
     }
@@ -584,6 +609,10 @@ export class LyricsService {
         status: 'not_found',
         reason: 'online-disabled'
       }
+    }
+
+    if (!title || !artist) {
+      return { status: 'not_found', reason: 'embedded-missing' }
     }
 
     const xlrcdbLookup = await this.xlrcdb.lookup(normalizedQuery, metadataSignature, {
