@@ -22,7 +22,7 @@ public:
         uint64_t sourceFrame
     );
     void updateDspConfig(const NativeDspConfig& config);
-    void updateTrackGain(const NativeTrackGain& gain);
+    void updateTrackGain(const NativeTrackGain& gain, double rampSeconds = 0.020);
     void prepareGaplessTrack(const TrackFormat& sourceFormat);
     void beginGaplessTrack(const TrackFormat& sourceFormat, const NativeTrackGain& gain);
     void reset(uint64_t sourceFrame);

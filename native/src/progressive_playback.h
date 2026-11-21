@@ -29,6 +29,7 @@ public:
     void configure(OutputPolicy policy, const TrackFormat& output, const NativeDspConfig& dsp);
     void setDspConfig(const NativeDspConfig& dsp);
     void setGain(const NativeTrackGain& gain);
+    void setSessionGain(uint64_t sessionId, const NativeTrackGain& gain, double rampSeconds);
     void stageNext(ProgressiveTrack track);
     void stageNext(TrackBuffer track);
     void seekComplete(uint64_t frame);

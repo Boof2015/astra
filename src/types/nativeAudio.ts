@@ -35,6 +35,13 @@ export interface NativeAudioDspConfig {
 export interface NativeAudioTrackGain {
   mode: NativeAudioGainMode
   gainDb: number
+  /** Current settings for processed remote normalization; not a DSP gain itself. */
+  normalizationTargetLufs?: number
+}
+
+export interface NativeRemoteNormalizationState {
+  gain: NativeAudioTrackGain
+  approximate: boolean
 }
 
 export type NativeAudioPlaybackState = 'stopped' | 'starting' | 'playing' | 'paused' | 'loading'
@@ -196,7 +203,7 @@ export interface NativeAudioDiagnosticReport {
 }
 
 export interface NativeAudioTrackMetadata {
-  /** Only processed remote output may use a previously completed cache scan. */
+  /** Target for processed remote normalization, from buffered PCM until a full cache scan is ready. */
   remoteNormalizationTargetLufs?: number
   streamingQuality?: import('./streamingQuality').StreamingQualityRequest
   path: string
@@ -218,6 +225,7 @@ export interface AudioBufferMemoryStats {
 }
 
 export interface NativeAudioPlaybackSnapshot {
+  remoteNormalization?: NativeRemoteNormalizationState
   progressiveSessionId?: number
   buffering?: boolean
   playbackSequence?: number
@@ -233,6 +241,7 @@ export interface NativeAudioPlaybackSnapshot {
 }
 
 export interface NativeAudioTrackLoadResult {
+  remoteNormalization?: NativeRemoteNormalizationState
   quality?: import('./streamingQuality').RemotePlaybackQuality
   playbackSequence: number
   sampleRate: number
@@ -264,6 +273,7 @@ type NativeAudioEventContent =
   | { type: 'prebufferInvalidated'; path: string }
   | {
       type: 'remoteProgress'
+      remoteNormalization?: NativeRemoteNormalizationState
       playbackSequence: number
       bufferCapacitySeconds: number
       currentTime: number

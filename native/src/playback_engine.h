@@ -334,6 +334,7 @@ public:
     void configureOutput(const NativeOutputRequest& request);
     void setDspConfig(const NativeDspConfig& config);
     void setCurrentTrackGain(const NativeTrackGain& gain);
+    void setProgressiveTrackGain(uint64_t sessionId, const NativeTrackGain& gain, double rampSeconds);
 
     void loadTrack(TrackBuffer track);
     void preloadNextTrack(TrackBuffer track);

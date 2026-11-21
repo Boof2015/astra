@@ -274,10 +274,16 @@ struct ProcessedAudioPipeline::Impl {
         processedOffsetFrames = 0;
     }
 
-    void scheduleTrackGain(const NativeTrackGain& gain) {
+    void scheduleTrackGain(const NativeTrackGain& gain, double rampSeconds = kEqCrossfadeSeconds) {
         trackGain = gain;
         targetTrackGain = dbToLinear(trackGain.gainDb);
-        const size_t rampFrames = std::max<size_t>(1, static_cast<size_t>(outputFormat.sampleRate * kEqCrossfadeSeconds));
+        if (rampSeconds <= 0.0) {
+            currentTrackGain = targetTrackGain;
+            trackGainRampRemaining = 0;
+            trackGainStep = 0.0;
+            return;
+        }
+        const size_t rampFrames = std::max<size_t>(1, static_cast<size_t>(outputFormat.sampleRate * rampSeconds));
         trackGainRampRemaining = rampFrames;
         trackGainStep = (targetTrackGain - currentTrackGain) / static_cast<double>(rampFrames);
     }
@@ -490,8 +496,8 @@ void ProcessedAudioPipeline::updateDspConfig(const NativeDspConfig& config) {
     impl_->eqCrossfadeRemaining = impl_->eqCrossfadeFrames;
 }
 
-void ProcessedAudioPipeline::updateTrackGain(const NativeTrackGain& gain) {
-    impl_->scheduleTrackGain(gain);
+void ProcessedAudioPipeline::updateTrackGain(const NativeTrackGain& gain, double rampSeconds) {
+    impl_->scheduleTrackGain(gain, rampSeconds);
 }
 
 void ProcessedAudioPipeline::prepareGaplessTrack(const TrackFormat& sourceFormat) {

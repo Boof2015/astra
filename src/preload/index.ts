@@ -741,7 +741,11 @@ try {
 
 const nativeAudioController = createNativeAudioController(visualizerDSP, {
   unavailableReason: nativeAddonLoadError,
-  acquireRemoteSource: createNativeRemoteSourceResolver((channel, ...args) => ipcRenderer.invoke(channel, ...args))
+  acquireRemoteSource: createNativeRemoteSourceResolver((channel, ...args) => ipcRenderer.invoke(channel, ...args)),
+  getRemoteAnalysis: key => ipcRenderer.invoke('audio:getRemoteAudioAnalysis', key),
+  onRemoteAnalysisReady: receive => {
+    ipcRenderer.on('audio:remoteAnalysisReady', (_event, { key, analysis }) => receive(key, analysis))
+  }
 })
 
 function getBlinkResourceUsage(): MemoryDiagnosticsBlinkResourceUsageSnapshot {

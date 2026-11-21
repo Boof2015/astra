@@ -39,6 +39,30 @@ test('append reports complete accepted frames, respects view offsets and stays b
   }
 })
 
+test('per-input gain validates ramps and targets only the matching current or prepared session', () => {
+  playback.configureOutput({ policy: 'processed', requestedSampleRate: 48000 })
+  const current = input()
+  current.append(new Uint8Array(16))
+  current.setGain({ mode: 'normalization', gainDb: -6 }, 0)
+  current.load()
+  const next = input()
+  next.append(new Uint8Array(16))
+  next.preloadNext()
+  next.setGain({ mode: 'normalization', gainDb: 4 }, 3)
+  assert.equal(playback.getPlaybackSnapshot().outputStatus.processing.trackGainDb, -6)
+  current.setGain({ mode: 'normalization', gainDb: -9 }, 0.25)
+  assert.equal(playback.getPlaybackSnapshot().outputStatus.processing.trackGainDb, -9)
+  for (const ramp of [-1, NaN, Infinity, 11, '3']) assert.throws(() => current.setGain({ mode: 'normalization', gainDb: 0 }, ramp))
+  assert.throws(() => current.setGain({ mode: 'normalization', gainDb: NaN }, 1))
+  assert.throws(() => current.setGain({ mode: 'invalid', gainDb: 0 }, 1))
+  playback.promoteNextTrack()
+  assert.equal(playback.getPlaybackSnapshot().outputStatus.processing.trackGainDb, 4)
+  current.setGain({ mode: 'off', gainDb: 0 }, 0)
+  assert.equal(playback.getPlaybackSnapshot().outputStatus.processing.trackGainDb, 4, 'cancelled handles cannot change the successor')
+  playback.stop()
+  playback.configureOutput({ policy: 'direct' })
+})
+
 test('handles attach once, expose identity, replace seeks, and cancel old/next inputs', async () => {
   const first = input()
   first.append(new Uint8Array(16))

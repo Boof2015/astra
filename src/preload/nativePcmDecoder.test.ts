@@ -13,6 +13,7 @@ function fakeInput(capacityFrames = 4, stride = 4): NativeProgressiveInput & { p
   const played: Buffer[] = []
   return {
     played,
+    setGain() {},
     status: () => ({ ...state }),
     append: (bytes) => {
       assert.equal(bytes.byteLength % stride, 0)

@@ -108,6 +108,7 @@ public:
             InstanceMethod("finish", &ProgressiveInputBinding::Finish),
             InstanceMethod("cancel", &ProgressiveInputBinding::Cancel),
             InstanceMethod("status", &ProgressiveInputBinding::Status),
+            InstanceMethod("setGain", &ProgressiveInputBinding::SetGain),
             InstanceMethod("load", &ProgressiveInputBinding::Load),
             InstanceMethod("preloadNext", &ProgressiveInputBinding::PreloadNext),
             InstanceMethod("seek", &ProgressiveInputBinding::Seek)
@@ -116,6 +117,28 @@ public:
     }
 
 private:
+    Napi::Value SetGain(const Napi::CallbackInfo& info) {
+        try {
+            if (!info[0].IsObject()) throw std::invalid_argument("Expected track gain.");
+            const auto value = info[0].As<Napi::Object>();
+            const auto mode = value.Get("mode");
+            const auto db = value.Get("gainDb");
+            if (!mode.IsString() || !db.IsNumber()) throw std::invalid_argument("Invalid track gain.");
+            const auto id = mode.As<Napi::String>().Utf8Value();
+            if (id != "off" && id != "normalization" && id != "replaygain") throw std::invalid_argument("Invalid gain mode.");
+            const double gainDb = db.As<Napi::Number>().DoubleValue();
+            const double seconds = info[1].IsUndefined() ? 0.020
+                : info[1].IsNumber() ? info[1].As<Napi::Number>().DoubleValue() : -1;
+            if (!std::isfinite(gainDb) || !std::isfinite(seconds) || seconds < 0 || seconds > 10) {
+                throw std::invalid_argument("Invalid gain or ramp duration.");
+            }
+            if (track_.input->snapshot().state == PcmInputState::Cancelled) return info.Env().Undefined();
+            track_.gain = {id == "normalization" ? TrackGainMode::Normalization
+                : id == "replaygain" ? TrackGainMode::ReplayGain : TrackGainMode::Off, std::clamp(gainDb, -24.0, 12.0)};
+            if (attached_) context_.engine.setProgressiveTrackGain(track_.sessionId, track_.gain, seconds);
+            return info.Env().Undefined();
+        } catch (const std::exception& error) { return Throw(info, error); }
+    }
     Napi::Value Append(const Napi::CallbackInfo& info) {
         if (!info[0].IsTypedArray() || info[0].As<Napi::TypedArray>().TypedArrayType() != napi_uint8_array) {
             Napi::TypeError::New(info.Env(), "Expected Uint8Array PCM.").ThrowAsJavaScriptException();

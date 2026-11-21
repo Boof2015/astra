@@ -28,6 +28,8 @@ export interface NativeProgressiveInput {
   finish(): boolean
   cancel(): void
   status(): NativeProgressiveInputStatus
+  /** Session-scoped gain; an unattached/prepared input never changes another track. */
+  setGain(gain: NativeAudioTrackGain, rampSeconds?: number): void
   load(): NativeAudioPlaybackSnapshot
   preloadNext(): void
   seek(expectedSessionId: number): Promise<NativeAudioPlaybackSnapshot>

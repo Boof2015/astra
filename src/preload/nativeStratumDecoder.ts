@@ -5,7 +5,8 @@ import type { NativePcmDecoder } from './nativePcmDecoder'
 /** Pull one bounded IPC packet at a time, then wait for native ring capacity.
  * No network/IPC/allocations are performed by the native audio callback. */
 export function startNativeStratumDecoder(source: NativeRemoteSource, input: NativeProgressiveInput,
-  signal: AbortSignal, onFailure: (error: Error) => void): NativePcmDecoder {
+  signal: AbortSignal, onFailure: (error: Error) => void,
+  onPcm?: (pcm: Uint8Array, startFrame: number) => void): NativePcmDecoder {
   const initial = input.status()
   const stride = initial.bytesPerFrame
   const channels = source.pcm!.info.channels
@@ -57,6 +58,7 @@ export function startNativeStratumDecoder(source: NativeRemoteSource, input: Nat
         }
         let offset = 0
         pendingBytes = bytes.length
+        onPcm?.(bytes, input.status().publishedFrame)
         while (offset < bytes.length) {
           active()
           const accepted = input.append(bytes.subarray(offset))

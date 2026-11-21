@@ -14,6 +14,8 @@ export interface NativePcmDecoderOptions {
   /** Confirm encoded-cache completion/validation before declaring decoded EOF. */
   validateEof?: () => Promise<void>
   onFailure?: (error: Error) => void
+  /** Observe aligned source PCM once, before any of it is published for playback. */
+  onPcm?: (pcm: Uint8Array, startFrame: number) => void
   spawnDecoder?: (command: string, args: string[]) => ChildProcessWithoutNullStreams
 }
 
@@ -126,6 +128,7 @@ export function startNativePcmDecoder(options: NativePcmDecoderOptions): NativeP
         const aligned = bytes.length - bytes.length % stride
         let offset = 0
         pendingBytes = bytes.length
+        if (aligned) options.onPcm?.(bytes.subarray(0, aligned), input.status().publishedFrame)
         while (offset < aligned) {
           assertActive()
           const accepted = input.append(bytes.subarray(offset, aligned))

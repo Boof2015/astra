@@ -16,6 +16,7 @@ import { join } from 'node:path'
 function harness(overrides: NativeAudioControllerOptions = {}, backend = 'coreaudio') {
   const inputs: NativeProgressiveInput[] = []
   const inputOptions: NativeProgressiveInputOptions[] = []
+  const gains: { id: number; gain: import('../types/nativeAudio.ts').NativeAudioTrackGain; ramp: number }[] = []
   const leases: { path: string; released: boolean }[] = []
   const decoders: NativePcmDecoderOptions[] = []
   const events: NativeAudioEvent[] = []
@@ -46,6 +47,7 @@ function harness(overrides: NativeAudioControllerOptions = {}, backend = 'coreau
       const id = inputs.length + 1
       const stride = options.channels * (options.sampleFormat === 's16' ? 2 : options.sampleFormat === 's24' ? 3 : 4)
       const input: NativeProgressiveInput = {
+        setGain: (gain, ramp = 0.02) => { gains.push({ id, gain, ramp }) },
         append: bytes => { const frames = bytes.length / stride; published += frames; return frames },
         finish: () => { inputState = 'ended'; return true }, cancel: () => { inputState = 'cancelled' },
         status: () => ({ sessionId: id, startFrame: options.startFrame ?? 0, retainedFrame: options.startFrame ?? 0,
@@ -85,12 +87,14 @@ function harness(overrides: NativeAudioControllerOptions = {}, backend = 'coreau
     },
     startRemoteDecoder: options => {
       decoders.push(options)
-      options.input.append(Buffer.alloc(40000 * 4))
+      const pcm = Buffer.alloc(40000 * 4)
+      options.onPcm?.(pcm, options.input.status().publishedFrame)
+      options.input.append(pcm)
       return { ready: Promise.resolve(), done: Promise.resolve(), cancel: () => options.input.cancel(), pid: undefined, pendingBytes: 0 }
     },
     ...overrides
   })
-  return { controller, playback, inputs, inputOptions, leases, decoders, localSeeks,
+  return { controller, playback, inputs, inputOptions, leases, decoders, localSeeks, gains,
     local: () => ({ localLoads, localDecodes }),
     setBuffering: (value: boolean) => { buffering = value },
     transition: () => {
@@ -103,6 +107,79 @@ function harness(overrides: NativeAudioControllerOptions = {}, backend = 'coreau
 
 const a = 'subsonic://server/track/a'
 const b = 'subsonic://server/track/b'
+
+for (const stratum of [false, true]) {
+  test(`${stratum ? 'Stratum' : 'conventional'} Exclusive first-play estimates are session-scoped and completed scans survive seeks`, async () => {
+    let receive!: (key: string, analysis: { loudnessLufs: number; peakLinear: number }) => void
+    const pcm = Buffer.alloc(48000 * 8)
+    for (let i = 0; i < 48000; i++) for (let ch = 0; ch < 2; ch++) pcm.writeInt32LE(
+      Math.round(0.9 * Math.sin(2 * Math.PI * 1000 * i / 48000) * 2147483648), (i * 2 + ch) * 4)
+    const h = harness({
+      onRemoteAnalysisReady: callback => { receive = callback }, getRemoteAnalysis: async () => null,
+      runProbe: async () => JSON.stringify({ streams: [{ codec_type: 'audio', codec_name: 'flac', sample_rate: '48000', channels: 2, sample_fmt: 's32', duration: '60' }] }),
+      acquireRemoteSource: async (path, _signal, _quality, request) => {
+        const quality = { requested: 'original' as const, requestedCodec: null, delivered: null, analysisKey: path, loudness: null }
+        let offset = 0
+        return { url: 'http://cache/internal', duration: 60, quality, release() {}, finished: async () => {},
+          progress: async () => ({ loadedBytes: 100, totalBytes: 200, complete: false, error: null }),
+          ...(stratum ? { pcm: { info: { sessionId: 1, sampleRate: 48000, channels: 2, bitDepth: 24 as const,
+            startFrame: Math.floor((request?.startTimeSeconds ?? 0) * 48000), duration: 60, quality },
+            read: async () => { if (offset === pcm.length) return null
+              const bytes = Uint8Array.from(pcm.subarray(offset, offset + 65536)); offset += bytes.length; return bytes.buffer },
+            close: async () => {}, activate() {} } } : {}) }
+      },
+      startRemoteDecoder: options => {
+        options.onPcm?.(pcm, options.input.status().publishedFrame)
+        options.input.append(pcm)
+        return { ready: Promise.resolve(), done: Promise.resolve(), cancel: () => options.input.cancel(), pendingBytes: 0, pid: undefined }
+      }
+    })
+    await h.controller.configureNativeOutput({ policy: 'processed', requestedSampleRate: 48000 })
+    const metadata = { path: a, remoteNormalizationTargetLufs: -14 }
+    const gain = { mode: 'normalization' as const, gainDb: 0 }
+    const loaded = await h.controller.loadTrack(a, metadata, gain)
+    assert.ok(loaded.remoteNormalization!.gain.gainDb < -12)
+    assert.equal(loaded.remoteNormalization!.approximate, true)
+    await h.controller.play()
+    await h.controller.preloadNextTrack(b, { ...metadata, path: b }, gain)
+    const before = h.gains.filter(change => change.id === 1).length
+    receive(b, { loudnessLufs: -18, peakLinear: 0.3 })
+    assert.equal(h.gains.filter(change => change.id === 1).length, before)
+    assert.equal(h.gains.filter(change => change.id === 2).at(-1)!.gain.gainDb, 4)
+    receive(a, { loudnessLufs: -16, peakLinear: 0.3 })
+    assert.equal(h.gains.filter(change => change.id === 1).at(-1)!.ramp, 3)
+    const snapshot = await h.controller.getPlaybackSnapshot()
+    assert.deepEqual(snapshot.remoteNormalization, { gain: { mode: 'normalization', gainDb: 2 }, approximate: false })
+    await h.controller.seek(10)
+    assert.equal((await h.controller.getPlaybackSnapshot()).remoteNormalization!.gain.gainDb, 2)
+    await h.controller.setNativeTrackGain({ mode: 'normalization', gainDb: 0, normalizationTargetLufs: -18 })
+    assert.equal((await h.controller.getPlaybackSnapshot()).remoteNormalization!.gain.gainDb, -2)
+    await h.controller.seek(20)
+    assert.equal((await h.controller.getPlaybackSnapshot()).remoteNormalization!.gain.gainDb, -2)
+    h.transition()
+    assert.equal((await h.controller.getPlaybackSnapshot()).remoteNormalization!.gain.gainDb, 4)
+    const gainsBeforeStop = h.gains.length
+    await h.controller.stop()
+    receive(b, { loudnessLufs: -5, peakLinear: 1 })
+    assert.equal(h.gains.length, gainsBeforeStop)
+  })
+}
+
+test('native startup recovers a missed analysis event; delayed obsolete lookups cannot alter another track', async () => {
+  let resolve!: (analysis: { loudnessLufs: number; peakLinear: number } | null) => void
+  const pending = new Promise<{ loudnessLufs: number; peakLinear: number } | null>(done => { resolve = done })
+  const h = harness({ acquireRemoteSource: async path => ({ ...automaticSource(undefined),
+    quality: { requested: 'original', requestedCodec: null, delivered: null, analysisKey: path, loudness: null } }),
+    getRemoteAnalysis: key => key === a ? pending : Promise.resolve({ loudnessLufs: -18, peakLinear: 0.3 }) })
+  await h.controller.configureNativeOutput({ policy: 'processed', requestedSampleRate: null })
+  await h.controller.loadTrack(a, { path: a, remoteNormalizationTargetLufs: -14 }, { mode: 'normalization', gainDb: 0 })
+  const next = await h.controller.loadTrack(b, { path: b, remoteNormalizationTargetLufs: -14 }, { mode: 'normalization', gainDb: 0 })
+  assert.equal(next.remoteNormalization!.gain.gainDb, 4)
+  resolve({ loudnessLufs: -5, peakLinear: 1 })
+  await new Promise<void>(done => setImmediate(done))
+  assert.equal((await h.controller.getPlaybackSnapshot()).remoteNormalization!.gain.gainDb, 4)
+  await h.controller.stop()
+})
 
 test('direct Stratum rejects a reduced representation before creating native input', async () => {
   let released = false
@@ -141,7 +218,7 @@ test('processed Stratum uses source-rate s32 input, preserves gain, and activate
     }
   }, resolveBinary: async () => { throw new Error('Stratum must not use the conventional decoder/probe') } })
   await h.controller.configureNativeOutput({ policy: 'processed', requestedSampleRate: 48000 })
-  const loaded = await h.controller.loadTrack(a, { path: a, remoteNormalizationTargetLufs: -14 })
+  const loaded = await h.controller.loadTrack(a, { path: a, remoteNormalizationTargetLufs: -14 }, { mode: 'normalization', gainDb: 0 })
   assert.equal(loaded.quality?.transport, 'stratum')
   assert.equal(loaded.sampleRate, 44100)
   assert.equal(loaded.sampleFormat, 's32')
@@ -247,7 +324,9 @@ for (const policy of ['processed', 'direct'] as const) {
       }, runProbe: async () => JSON.stringify({ streams: [{ codec_type: 'audio', codec_name: codec, sample_rate: '48000', channels: 2, sample_fmt: 's16', duration: '60' }] }),
       startRemoteDecoder: options => {
         if (!options.args.includes(`http://cache/${codec}`)) throw new Error('Decoder (codec ac4) not found for input stream #0:0')
-        options.input.append(Buffer.alloc(40000 * 4))
+        const pcm = Buffer.alloc(40000 * 4)
+      options.onPcm?.(pcm, options.input.status().publishedFrame)
+      options.input.append(pcm)
         return { ready: Promise.resolve(), done: Promise.resolve(), cancel: () => options.input.cancel(), pid: undefined, pendingBytes: 0 }
       } })
       await h.controller.configureNativeOutput({ policy, requestedSampleRate: null })
@@ -280,7 +359,9 @@ test('native corrupt media and device errors never request a compatibility encod
           options.input.append(Buffer.alloc(4))
           throw new Error('Decoder (codec ac4) not found for input stream #0:0')
         }
-        options.input.append(Buffer.alloc(40000 * 4))
+        const pcm = Buffer.alloc(40000 * 4)
+      options.onPcm?.(pcm, options.input.status().publishedFrame)
+      options.input.append(pcm)
         return { ready: Promise.resolve(), done: Promise.resolve(), cancel: () => options.input.cancel(), pid: undefined, pendingBytes: 0 }
       } })
     if (failure === 'device') h.playback.createProgressiveInput = () => { throw new Error('Decoder (codec ac4) not found for input stream #0:0') }
@@ -292,23 +373,24 @@ test('native corrupt media and device errors never request a compatibility encod
 
 for (const policy of ['processed', 'direct'] as const) {
   test(`saved remote loudness is fixed before ${policy} playback and successor preparation`, async () => {
-    let loudness: { loudnessLufs: number; peakLinear: number } | null = null
+    let loudness: { loudnessLufs: number; peakLinear: number } | null = { loudnessLufs: -18, peakLinear: 0.3 }
     const h = harness({ acquireRemoteSource: async (_path, _signal, request) => {
       const source = automaticSource(request)
       return { ...source, quality: { ...source.quality, loudness } }
     } })
     await h.controller.configureNativeOutput({ policy, requestedSampleRate: null })
     const metadata = { path: a, remoteNormalizationTargetLufs: -14 }
-    await h.controller.loadTrack(a, metadata)
+    const gain = { mode: policy === 'processed' ? 'normalization' as const : 'off' as const, gainDb: 0 }
+    await h.controller.loadTrack(a, metadata, gain)
     await h.controller.play()
     const initialGain = h.inputOptions[0].gain
-    assert.equal(initialGain?.gainDb, 0)
+    assert.equal(initialGain?.gainDb, policy === 'processed' ? 4 : 0)
     loudness = { loudnessLufs: -18, peakLinear: 0.3 }
     await h.controller.seek(20)
     assert.deepEqual(h.inputOptions.at(-1)?.gain, initialGain, 'a completed scan must not alter a seek in this play')
     await h.controller.changeRemoteQuality(a, { mode: 'automatic', target: 128 })
     assert.deepEqual(h.inputOptions.at(-1)?.gain, initialGain, 'automatic changes retain the playing gain')
-    await h.controller.preloadNextTrack(b, { ...metadata, path: b })
+    await h.controller.preloadNextTrack(b, { ...metadata, path: b }, gain)
     assert.equal(h.inputOptions.at(-1)?.gain?.gainDb, policy === 'processed' ? 4 : 0)
     h.transition()
     await h.controller.getPlaybackSnapshot()

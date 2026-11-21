@@ -1,4 +1,4 @@
-import { AdaptiveNormalization } from './adaptiveNormalization'
+import { AdaptiveNormalization, adaptiveNormalizationRampSeconds, ADAPTIVE_NORMALIZATION_MIN_DELTA_DB } from './adaptiveNormalization'
 import type { RemoteAudioAnalysis, RemoteAudioLoudness } from '../../types/remoteAudioAnalysis'
 import { AutomaticQualityCoordinator, type AutomaticPlaybackSnapshot } from './AutomaticQualityCoordinator'
 import { playbackQualityRequest, type StreamingQualityRequest } from '../../types/streamingQuality'
@@ -30,6 +30,7 @@ import type {
   NativeAudioTrackMetadata,
   NativeAudioTrackLoadResult,
   NativeAudioTrackGain,
+  NativeRemoteNormalizationState,
   NativeAudioVisualizerTapDemand,
   PlaybackOutputMode
 } from '../../types/nativeAudio'
@@ -947,13 +948,23 @@ export class AudioEngine {
 
   private getNativeTrackGain(): NativeAudioTrackGain {
     const gain = this.resolveGainStateForAnalysis(this.currentNormalizationAnalysis, this.currentReplayGainDb)
-    return { mode: gain.mode, gainDb: gain.gainDb }
+    return { mode: gain.mode, gainDb: gain.gainDb,
+      ...(this.currentBufferTrackPath && retainedRemoteSourceFromPath(this.currentBufferTrackPath)
+        ? { normalizationTargetLufs: this._targetLufs } : {}) }
+  }
+
+  private adoptNativeNormalization(state: NativeRemoteNormalizationState | undefined): void {
+    if (!state || !this.isProcessedExclusiveMode()) return
+    this._normalizationGainDb = state.gain.gainDb
+    this._normalizationMode = state.gain.mode
+    this.normalizationApproximate = state.approximate
   }
 
   private async syncNativeDspConfig(): Promise<void> {
     if (!this.isProcessedExclusiveMode()) return
     this.nativeSnapshot = await window.nativeAudioAPI.setNativeDspConfig(this.buildNativeDspConfig())
     this.nativeSnapshot = await window.nativeAudioAPI.setNativeTrackGain(this.getNativeTrackGain())
+    this.adoptNativeNormalization(this.nativeSnapshot.remoteNormalization)
   }
 
   private syncNativeTrackGain(): void {
@@ -966,6 +977,7 @@ export class AudioEngine {
     })
     void window.nativeAudioAPI.setNativeTrackGain(gain).then((snapshot) => {
       this.nativeSnapshot = snapshot
+      this.adoptNativeNormalization(snapshot.remoteNormalization)
       this.emit('nativeOutputStatusChange', snapshot.outputStatus)
     }).catch((error) => {
       this.emit('error', error instanceof Error ? error : new Error('Failed to update native track gain'))
@@ -1466,6 +1478,7 @@ export class AudioEngine {
     try {
       this.nativeSnapshot = await window.nativeAudioAPI.getPlaybackSnapshot()
       this.adoptNativePlaybackSequence(this.nativeSnapshot)
+      this.adoptNativeNormalization(this.nativeSnapshot.remoteNormalization)
       this.emit('nativeOutputStatusChange', this.nativeSnapshot.outputStatus)
       return this.nativeSnapshot
     } catch {
@@ -1507,6 +1520,7 @@ export class AudioEngine {
           || event.playbackSequence !== this.nativeCurrentPlaybackSequence
           || event.progress.path !== this.currentBufferTrackPath) return
         this.nativeRemoteProgress = event.progress
+        this.adoptNativeNormalization(event.remoteNormalization)
         this.nativeRemoteBufferCapacitySeconds = event.bufferCapacitySeconds
         if (this.nativeSnapshot) this.nativeSnapshot = { ...this.nativeSnapshot,
           progressiveSessionId: event.progressiveSessionId, buffering: event.buffering, currentTime: event.currentTime }
@@ -1999,8 +2013,10 @@ export class AudioEngine {
         linearGain: this.toLinearGain(resolvedGain.gain.gainDb)
       })
       if (this.isProcessedExclusiveMode()) {
-        this.nativeSnapshot = await window.nativeAudioAPI.setNativeTrackGain(resolvedGain.gain)
+        this.nativeSnapshot = await window.nativeAudioAPI.setNativeTrackGain({ ...resolvedGain.gain,
+          ...(isRetainedRemoteSource(track.sourceType) ? { normalizationTargetLufs: this._targetLufs } : {}) })
         this.assertCurrentLoadOperation(loadOperation)
+        this.adoptNativeNormalization(this.nativeSnapshot.remoteNormalization)
         this.emit('nativeOutputStatusChange', this.nativeSnapshot.outputStatus)
       }
     }
@@ -3361,10 +3377,10 @@ export class AudioEngine {
       this.applyGainState(gain)
       return
     }
-    if (gain.mode === this._normalizationMode && Math.abs(gain.gainDb - this._normalizationGainDb) < 0.25
+    if (gain.mode === this._normalizationMode && Math.abs(gain.gainDb - this._normalizationGainDb) < ADAPTIVE_NORMALIZATION_MIN_DELTA_DB
       && !state.adaptiveNormalization!.final) return
     if (gain.mode === this._normalizationMode && gain.gainDb === this._normalizationGainDb) return
-    const seconds = gain.gainDb > this._normalizationGainDb ? 3 : 0.25
+    const seconds = adaptiveNormalizationRampSeconds(this._normalizationGainDb, gain.gainDb)
     this._normalizationGainDb = gain.gainDb
     this._normalizationMode = gain.mode
     this.remoteStreamNode?.port.postMessage({ type: 'set-gain', sessionId: state.sessionId,
@@ -5888,6 +5904,7 @@ export class AudioEngine {
     if (this._replayGainEnabled && this.currentReplayGainDb != null) return
     const trackPath = this.currentBufferTrackPath
     if (!trackPath || (!this.getAudioBuffer() && !this.isProcessedExclusiveMode())) return
+    if (retainedRemoteSourceFromPath(trackPath)) return // The retained cache scan supplies this analysis.
     if (this.pendingCurrentLoudnessTrackPath === trackPath) return
 
     this.pendingCurrentLoudnessTrackPath = trackPath

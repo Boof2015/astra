@@ -59,6 +59,7 @@ test('real FFmpeg decodes retained original audio and replacement seeks into add
         accepted.push(Buffer.from(data.subarray(0, frames * input.status().bytesPerFrame)))
         return frames
       },
+      setGain: input.setGain.bind(input),
       status: input.status.bind(input), finish: input.finish.bind(input), cancel: input.cancel.bind(input),
       load: input.load.bind(input), preloadNext: input.preloadNext.bind(input), seek: input.seek.bind(input)
     }

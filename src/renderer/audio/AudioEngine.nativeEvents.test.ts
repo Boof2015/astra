@@ -379,6 +379,7 @@ test('Exclusive Stratum keeps native playback identity, main diagnostics and int
     playbackState: 'playing', currentTime: 12 } as NativeAudioPlaybackSnapshot
   const progress: Extract<NativeAudioEvent, { type: 'remoteProgress' }> = {
     type: 'remoteProgress', playbackSequence: 7, progressiveSessionId: 11, buffering: false,
+    remoteNormalization: { gain: { mode: 'normalization', gainDb: -9 }, approximate: true },
     bufferCapacitySeconds: 8, currentTime: 12, playbackState: 'playing', progress: {
       sessionId: 11, diagnosticsSessionId: 91, path: internals.currentBufferTrackPath,
       transport: 'stratum-proof', sourceType: 'subsonic', stage: 'streaming',
@@ -394,6 +395,15 @@ test('Exclusive Stratum keeps native playback identity, main diagnostics and int
   assert.equal(engine.getStreamingDiagnosticsState().transport, 'stratum')
   assert.equal(engine.getRemotePlaybackQuality()?.requested, 64)
   assert.equal(internals.automaticQualitySnapshot(), null, 'main owns interval adaptation')
+  assert.equal(engine.getNormalizationGainDb(), -9)
+  assert.equal(engine.isNormalizationApproximate(), true)
+  internals.handleNativeAudioEvent({ ...progress, playbackSequence: 6,
+    remoteNormalization: { gain: { mode: 'normalization', gainDb: 6 }, approximate: false } })
+  assert.equal(engine.getNormalizationGainDb(), -9, 'an old track cannot change the gain readout')
+  internals.handleNativeAudioEvent({ ...progress,
+    remoteNormalization: { gain: { mode: 'normalization', gainDb: -7 }, approximate: false } })
+  assert.equal(engine.getNormalizationGainDb(), -7)
+  assert.equal(engine.isNormalizationApproximate(), false)
   // Prove the gate matters: a conventional native stream with the same evidence
   // remains eligible for the existing whole-stream replacement controller.
   internals.handleNativeAudioEvent({ ...progress, progress: { ...progress.progress, transport: undefined,
@@ -605,6 +615,45 @@ test('processed-exclusive native decode starts without waiting for loudness anal
     assert.equal(nativeGainUpdates, 1)
   } finally {
     resolveLoudness?.({ loudnessLufs: -20, peakLinear: 0.5 })
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else delete (globalThis as Record<string, unknown>).window
+  }
+})
+
+test('Exclusive remote load and settings adopt the native estimate instead of the missing-analysis unity value', async () => {
+  const engine = new AudioEngine()
+  const internals = engine as unknown as AudioEngineInternals
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const snapshot = { playbackSequence: 31, playbackState: 'stopped', currentTime: 0, duration: 180,
+    sampleRate: 48000, channels: 2, sampleFormat: 's32', outputStatus: {},
+    remoteNormalization: { gain: { mode: 'normalization', gainDb: -10 }, approximate: true }
+  } as NativeAudioPlaybackSnapshot
+  const updates: import('../../types/nativeAudio.ts').NativeAudioTrackGain[] = []
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { nativeAudioAPI: {
+    loadTrack: async () => ({ playbackSequence: 31, sampleRate: 48000, channels: 2, sampleFormat: 's32', duration: 180 }),
+    setNativeTrackGain: async (gain: import('../../types/nativeAudio.ts').NativeAudioTrackGain) => {
+      updates.push(gain)
+      return snapshot
+    }
+  } } })
+  internals.playbackOutputMode = 'exclusive'
+  internals._normalizationEnabled = true
+  internals._replayGainEnabled = false
+  internals.initNativeAudio = async () => undefined
+  internals.refreshNativeCapabilities = async () => undefined
+  internals.refreshNativeSnapshot = async () => snapshot
+  engine.clearNextBuffer = async () => undefined
+  try {
+    await engine.loadTrackFromPath({ ...makeLocalPcmTrack('remote'), sourceType: 'subsonic', path: 'subsonic://1/a' })
+    assert.equal(updates.at(-1)!.normalizationTargetLufs, -14)
+    assert.equal(engine.getNormalizationGainDb(), -10)
+    assert.equal(engine.isNormalizationApproximate(), true)
+    snapshot.remoteNormalization = { gain: { mode: 'normalization', gainDb: -14 }, approximate: true }
+    engine.targetLufs = -18
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(updates.at(-1)!.normalizationTargetLufs, -18)
+    assert.equal(engine.getNormalizationGainDb(), -14)
+  } finally {
     if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
     else delete (globalThis as Record<string, unknown>).window
   }

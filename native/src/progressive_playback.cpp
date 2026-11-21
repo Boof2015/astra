@@ -118,6 +118,16 @@ void ProgressivePlayback::setGain(const NativeTrackGain& gain) {
     if (policy_ == OutputPolicy::Processed && !renderingNext_) pipeline_.updateTrackGain(gain);
 }
 
+void ProgressivePlayback::setSessionGain(uint64_t sessionId, const NativeTrackGain& gain, double rampSeconds) {
+    if (sessionId == current_->track.sessionId) {
+        current_->track.gain = gain;
+        if (policy_ == OutputPolicy::Processed && !renderingNext_) pipeline_.updateTrackGain(gain, rampSeconds);
+    } else if (next_ && sessionId == next_->track.sessionId) {
+        next_->track.gain = gain;
+        if (policy_ == OutputPolicy::Processed && renderingNext_) pipeline_.updateTrackGain(gain, rampSeconds);
+    }
+}
+
 void ProgressivePlayback::stageNext(ProgressiveTrack track) {
     if (next_) throw std::logic_error("Clear the existing progressive successor before replacing it.");
     if (current_->renderEnded) {

@@ -619,6 +619,11 @@ void PlaybackEngine::setCurrentTrackGain(const NativeTrackGain& gain) {
     else if (outputRequest_.policy == OutputPolicy::Processed) processedPipeline_->updateTrackGain(gain);
 }
 
+void PlaybackEngine::setProgressiveTrackGain(uint64_t sessionId, const NativeTrackGain& gain, double rampSeconds) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (progressive_) progressive_->setSessionGain(sessionId, gain, std::clamp(rampSeconds, 0.0, 10.0));
+}
+
 std::string PlaybackEngine::getNativeAudioDiagnosticReport() const {
     return BuildNativeAudioDiagnosticReport(getOutputStatus());
 }

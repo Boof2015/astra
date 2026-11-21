@@ -1,5 +1,6 @@
 #include "progressive_pcm_input.h"
 #include "audio_processing.h"
+#include "progressive_playback.h"
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -382,6 +383,57 @@ void testProcessedGaplessBoundary() {
     }
 }
 
+void testSessionNormalizationRamps() {
+    constexpr uint32_t rate = 48000;
+    const auto format = BuildTrackFormat(rate, 2, "f32");
+    const std::vector<float> samples(rate * 8 * 2, 0.25f);
+    const auto makeInput = [&](uint64_t id) {
+        ProgressiveTrack track;
+        track.sessionId = id;
+        track.format = format;
+        track.input = std::make_shared<ProgressivePcmInput>(8, rate * 8);
+        assert(track.input->append(samples.data(), rate * 8) == rate * 8);
+        return track;
+    };
+    NativeDspConfig config;
+    config.limiterEnabled = false;
+    ProgressivePlayback player(makeInput(1));
+    player.configure(OutputPolicy::Processed, format, config);
+    player.stageNext(makeInput(2));
+    const auto render = [&](size_t frames) {
+        std::vector<float> output(frames * 2);
+        bool ended = false;
+        assert(player.render(output.data(), frames, ended) == frames);
+        assert(!ended);
+        player.consume(frames);
+        return output;
+    };
+    player.setSessionGain(2, {TrackGainMode::Normalization, -12}, 0);
+    player.setSessionGain(999, {TrackGainMode::Normalization, -18}, 0);
+    const auto first = render(1024);
+    for (const auto sample : first) assert(std::abs(sample - 0.25f) < 1e-6);
+    player.setSessionGain(1, {TrackGainMode::Normalization, -6}, 0.25);
+    const auto down = render(12288);
+    const double reduced = 0.25 * std::pow(10.0, -6.0 / 20);
+    assert(std::abs(down.front() - 0.25) < 0.0001);
+    assert(std::abs(down[6000 * 2] - (0.25 + reduced) / 2) < 0.0001);
+    assert(std::abs(down.back() - reduced) < 0.0001);
+    player.setSessionGain(1, {TrackGainMode::Normalization, 0}, 3);
+    const auto up = render(144384);
+    assert(std::abs(up.front() - reduced) < 0.0001);
+    assert(std::abs(up[72000 * 2] - (0.25 + reduced) / 2) < 0.0001);
+    assert(std::abs(up.back() - 0.25) < 0.0001);
+
+    // Even a stray gain update cannot process direct output.
+    ProgressivePlayback direct(makeInput(3));
+    direct.configure(OutputPolicy::Direct, format, config);
+    direct.setSessionGain(3, {TrackGainMode::Normalization, -18}, 3);
+    std::vector<float> raw(4096 * 2);
+    bool ended = false;
+    assert(direct.render(raw.data(), 4096, ended) == 4096);
+    assert(std::memcmp(raw.data(), samples.data(), raw.size() * sizeof(float)) == 0);
+}
+
 // Can be compiled against the previous DSP source for a byte-for-byte local
 // regression comparison, independent of the incremental adapter under test.
 void writeCompleteOutputFingerprints() {
@@ -420,6 +472,7 @@ int main() {
     testLimiterWaitsForLookaheadAndDspRollback();
     testShortAndEmptyStreams();
     testProcessedGaplessBoundary();
+    testSessionNormalizationRamps();
     std::cout << "native progressive input prototype passed (113 DSP/format/seek/boundary comparisons plus lifecycle and concurrency probes)\n";
 #endif
 }
