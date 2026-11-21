@@ -1174,6 +1174,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => {
   let remoteWaveformKey: string | null = null
 
   const applyRemoteWaveform = (key: string, analysis: RemoteAudioAnalysis | null): void => {
+    if (isRemoteAudioAnalysis(analysis)) audioEngine.acceptRemoteLoudness(key, analysis)
     const state = get()
     if (!isRetainedRemoteSource(state.currentTrack?.sourceType) || !isRemoteAudioAnalysis(analysis)
       || state.remoteLoadProgress?.path !== state.currentTrack?.path

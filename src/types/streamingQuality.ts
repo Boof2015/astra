@@ -30,7 +30,7 @@ export interface DeliveredAudioFormat {
 export interface RemotePlaybackQuality {
   transport?: 'stratum'
   analysisKey?: string
-  /** Snapshot at acquisition; a scan finishing mid-play never changes gain. */
+  /** Snapshot at acquisition. Standard can settle a provisional gain via the analysis-ready event. */
   loudness?: import('./remoteAudioAnalysis').RemoteAudioLoudness | null
   requested: StreamQualityTarget
   mode?: AutomaticStreamingQuality

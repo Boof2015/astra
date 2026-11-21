@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { AudioEngine, isSupersededAudioLoadError } from './AudioEngine.ts'
 import type { Track } from '../types/audio.ts'
-import type { RemoteStreamEvent, RemoteStreamInfo } from '../../types/remoteStream.ts'
+import type { RemoteStreamChunk, RemoteStreamEvent, RemoteStreamInfo } from '../../types/remoteStream.ts'
 
 test('cached remote seek restarts decoding beyond PCM headroom and preserves paused intent', async () => {
   const engine = new AudioEngine()
@@ -59,7 +59,7 @@ async function flush() {
 // Exercise the real load/seek/play lifecycle, including the interval with no
 // remoteStreamState. Only the browser audio graph and Electron transport are fake.
 async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'local' | 'subsonic' | 'jellyfin' | 'plex' = 'subsonic', renderAudio = false,
-  options: { quality?: () => RemotePlaybackQuality; normalization?: boolean; segmented?: boolean } = {}) {
+  options: { quality?: () => RemotePlaybackQuality; normalization?: boolean; segmented?: boolean; sampleRate?: number; initialPcm?: (rate: number) => Float32Array } = {}) {
   const engine = new AudioEngine()
   const internals = engine as unknown as {
     context: AudioContext
@@ -76,6 +76,7 @@ async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'loca
     applyGainState: () => void
     startTimeUpdate: () => void
     handleRemoteStreamEvent: (event: RemoteStreamEvent) => void
+    handleRemoteStreamChunk: (chunk: RemoteStreamChunk) => void
     promoteRemoteStream: (previousSessionId: number, sessionId: number) => void
   }
   const realApplyGainState = internals.applyGainState.bind(engine)
@@ -88,7 +89,7 @@ async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'loca
   let cancellationGate: Promise<void> | null = null
   const cancelledSessions: number[] = []
   const playedTimes: number[] = []
-  const workletMessages: Array<{ type: string; sessionId?: number; nextSessionId?: number; gain?: number }> = []
+  const workletMessages: Array<{ type: string; sessionId?: number; nextSessionId?: number; gain?: number; rampFrames?: number }> = []
   const activatedSessions: number[] = []
   const reportedSessions: number[] = []
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { electronAPI: {
@@ -110,7 +111,8 @@ async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'loca
     updateProgressiveStreamPosition: (sessionId: number) => { reportedSessions.push(sessionId) },
     activateProgressiveStream: (sessionId: number) => { activatedSessions.push(sessionId) }
   } } })
-  internals.context = { sampleRate: 1000, currentTime: 0 } as AudioContext
+  const rate = options.sampleRate ?? 1000
+  internals.context = { sampleRate: rate, currentTime: 0 } as AudioContext
   internals.workletLoaded = true
   internals._normalizationEnabled = options.normalization ?? false
   internals.initContext = async () => undefined
@@ -122,7 +124,7 @@ async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'loca
     runInNewContext(readFileSync(new URL('../public/oscilloscope-worklet.js', import.meta.url), 'utf8'), {
       AudioWorkletProcessor: class { port = { onmessage: null, postMessage: () => undefined } },
       registerProcessor: (name: string, ctor: typeof ProcessorClass) => { if (name === 'remote-stream-player') ProcessorClass = ctor },
-      Float32Array, sampleRate: 1000, get currentFrame() { return renderFrame }
+      Float32Array, sampleRate: rate, get currentFrame() { return renderFrame }
     })
   }
   Object.defineProperty(globalThis, 'AudioWorkletNode', { configurable: true, value: class {
@@ -163,15 +165,15 @@ async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'loca
     else delete (globalThis as Record<string, unknown>).AudioWorkletNode
   })
   const track = { path: sourceType === 'local' ? '/music/local.flac' : `${sourceType}://7/drag`, sourceType, duration: 1800 } as Track
-  const complete = (index: number, withPcm = true) => {
+  const complete = (index: number, withPcm = true, qualityOverride?: RemotePlaybackQuality) => {
     const request = requests[index]
     const requestSource = request.path.startsWith('plex://') ? 'plex' : request.path.startsWith('jellyfin://') ? 'jellyfin' : request.path.startsWith('subsonic://') ? 'subsonic' : 'local'
-    request.resolve({ quality: options.quality?.() ?? (typeof request.quality === 'object' ? { mode: request.quality.mode, requested: request.quality.target, requestedCodec: 'mp3', delivered: null } : undefined), sessionId: request.sessionId, path: request.path, sourceType: requestSource,
+    request.resolve({ quality: qualityOverride ?? options.quality?.() ?? (typeof request.quality === 'object' ? { mode: request.quality.mode, requested: request.quality.target, requestedCodec: 'mp3', delivered: null } : undefined), sessionId: request.sessionId, path: request.path, sourceType: requestSource,
       sampleRate: request.sampleRate, channels: 2, durationSeconds: 1800, startTimeSeconds: request.target,
       seekableCache: requestSource !== 'local' && !options.segmented,
       restartable: options.segmented, transport: options.segmented ? 'stratum-proof' : undefined,
       initialChunk: withPcm ? { sessionId: request.sessionId, path: request.path, sourceType: requestSource,
-        sampleRate: request.sampleRate, channels: 2, frameCount: request.sampleRate, pcmData: new ArrayBuffer(request.sampleRate * 8),
+        sampleRate: request.sampleRate, channels: 2, frameCount: request.sampleRate, pcmData: options.initialPcm?.(request.sampleRate).buffer as ArrayBuffer ?? new ArrayBuffer(request.sampleRate * 8),
         decodedFrames: request.sampleRate, decodedSeconds: 1 } : null
     })
   }
@@ -188,11 +190,11 @@ async function remoteHarness(t: TestContext, playing: boolean, sourceType: 'loca
 }
 
 for (const initiallyAnalysed of [false, true]) {
-  test(`Standard remote playback keeps ${initiallyAnalysed ? 'saved' : 'missing'} loudness stable across seeks and prepares each successor independently`, async t => {
+  test(`Standard remote playback ${initiallyAnalysed ? 'keeps known loudness stable' : 'adopts complete analysis on seek'} and prepares each successor independently`, async t => {
     let loudness = initiallyAnalysed ? { loudnessLufs: -18, peakLinear: 0.3 } : null
     const h = await remoteHarness(t, true, 'subsonic', false, { normalization: true,
       quality: () => ({ requested: 'original', requestedCodec: null, delivered: null, loudness }) })
-    const expected = initiallyAnalysed ? 4 : 0
+    let expected = initiallyAnalysed ? 4 : -6
     assert.equal(h.engine.getNormalizationGainDb(), expected)
     let partialWaveforms = 0
     h.engine.on('remoteWaveformUpdate', () => { partialWaveforms++ })
@@ -200,7 +202,8 @@ for (const initiallyAnalysed of [false, true]) {
     loudness = { loudnessLufs: -16, peakLinear: 0.3 }
     const seek = h.engine.seek(20)
     await flush(); h.complete(1); await seek
-    assert.equal(h.engine.getNormalizationGainDb(), expected, 'new decoder metadata cannot change the current gain')
+    expected = initiallyAnalysed ? 4 : 2
+    assert.equal(h.engine.getNormalizationGainDb(), expected, 'known gain stays fixed; an unknown track can adopt its completed scan')
     const nextTrack = { ...h.track, path: 'jellyfin://7/next', sourceType: 'jellyfin' as const }
     const next = h.engine.preBufferNextRemoteTrack(nextTrack, null)
     await flush(); h.complete(2); await next
@@ -213,8 +216,8 @@ for (const initiallyAnalysed of [false, true]) {
   })
 }
 
-async function automaticHarness(t: TestContext) {
-  const h = await remoteHarness(t, true, 'subsonic', true)
+async function automaticHarness(t: TestContext, normalization = false) {
+  const h = await remoteHarness(t, true, 'subsonic', true, { normalization })
   const internal = h.engine as unknown as {
     remoteStreamState: { quality: RemotePlaybackQuality }
     automaticQualityProgress: unknown
@@ -230,6 +233,152 @@ async function automaticHarness(t: TestContext) {
   // thread for the exact consumed frame instead of using the previous UI time.
   return { ...h, internal }
 }
+
+function interleavedTone(rate: number, seconds: number, amplitude: number): Float32Array {
+  return Float32Array.from({ length: Math.round(rate * seconds) * 2 }, (_, i) =>
+    amplitude * Math.sin(2 * Math.PI * 1000 * Math.floor(i / 2) / rate))
+}
+
+for (const segmented of [false, true]) {
+  test(`${segmented ? 'Stratum' : 'conventional'} first-play normalization measures before playback, survives seek, and ramps to the complete result`, async t => {
+    const h = await remoteHarness(t, true, 'subsonic', true, {
+      normalization: true, segmented, sampleRate: 48000, initialPcm: rate => interleavedTone(rate, 1, 0.9),
+      quality: () => ({ requested: 'original', requestedCodec: null, delivered: null, analysisKey: 'first', loudness: null })
+    })
+    const initial = h.engine.getNormalizationGainDb()
+    assert.ok(initial < -12)
+    assert.equal(h.engine.isNormalizationApproximate(), true)
+    const start = h.workletMessages.findIndex(m => m.type === 'set-playing')
+    const gainsBeforeStart = h.workletMessages.slice(0, start).filter(m => m.type === 'set-gain' && m.sessionId === 1)
+    assert.ok(Math.abs(gainsBeforeStart.at(-1)!.gain! - 10 ** (initial / 20)) < 1e-6)
+    const adaptive = (h.internals.remoteStreamState as unknown as { adaptiveNormalization: { estimator: { measuredSeconds: number } } }).adaptiveNormalization
+    const seconds = adaptive.estimator.measuredSeconds
+    const seek = h.engine.seek(0)
+    await flush(); h.complete(1); await seek
+    assert.equal((h.internals.remoteStreamState as unknown as { adaptiveNormalization: unknown }).adaptiveNormalization, adaptive)
+    assert.equal(adaptive.estimator.measuredSeconds, seconds, 'seeked/redecoded coverage was not counted again')
+    assert.equal(h.engine.getNormalizationGainDb(), initial)
+    h.internals.handleRemoteStreamEvent({ type: 'complete', sessionId: 2, path: h.track.path, sourceType: 'subsonic', decodedFrames: 48000, decodedSeconds: 1 })
+    assert.equal(h.engine.isNormalizationApproximate(), true, 'decoder EOF cannot certify a whole-track analysis')
+    h.engine.acceptRemoteLoudness('obsolete', { loudnessLufs: -16, peakLinear: 0.3 })
+    assert.equal(h.engine.getNormalizationGainDb(), initial)
+    h.engine.acceptRemoteLoudness('first', { loudnessLufs: -16, peakLinear: 0.3 })
+    assert.equal(h.engine.getNormalizationGainDb(), 2)
+    assert.equal(h.engine.isNormalizationApproximate(), false)
+    const final = h.workletMessages.filter(m => m.type === 'set-gain' && m.sessionId === 2).at(-1)!
+    assert.equal(final.rampFrames, 48000 * 3, 'gain increases gradually, on the audio thread')
+    const node = h.internals.remoteStreamNode as unknown as { render: (frames: number) => Float32Array[] }
+    const output = node.render(480)
+    const peak = Math.max(...output[0].map(Math.abs))
+    assert.ok(peak < 0.3, 'the rendered audio still starts near the provisional gain during the upward ramp')
+    h.engine.acceptRemoteLoudness('first', { loudnessLufs: -9, peakLinear: 0.5 })
+    assert.equal(h.engine.getNormalizationGainDb(), 2, 'the completed result is adopted only once')
+  })
+}
+
+test('a prepared unknown track gets its own estimate and complete result without changing the current track', async t => {
+  let key = 'current'
+  const h = await remoteHarness(t, true, 'jellyfin', false, { normalization: true,
+    quality: () => ({ requested: 'original', requestedCodec: null, delivered: null, analysisKey: key, loudness: null }) })
+  key = 'next'
+  const prepare = h.engine.preBufferNextRemoteTrack({ ...h.track, path: 'plex://1/next', sourceType: 'plex' }, null)
+  await flush(); h.complete(1); await prepare
+  assert.equal(h.engine.getNormalizationGainDb(), -6)
+  h.engine.acceptRemoteLoudness('next', { loudnessLufs: -18, peakLinear: 0.3 })
+  assert.equal(h.engine.getNormalizationGainDb(), -6)
+  assert.ok(h.workletMessages.some(m => m.type === 'set-gain' && m.sessionId === 2 && Math.abs(m.gain! - 10 ** (4 / 20)) < 1e-6))
+  h.internals.promoteRemoteStream(1, 2)
+  assert.equal(h.engine.getNormalizationGainDb(), 4)
+  assert.equal(h.engine.isNormalizationApproximate(), false)
+  h.engine.acceptRemoteLoudness('current', { loudnessLufs: -5, peakLinear: 1 })
+  assert.equal(h.engine.getNormalizationGainDb(), 4)
+})
+
+test('known loudness, ReplayGain and normalization off retain their existing behavior', async t => {
+  const h = await remoteHarness(t, true, 'plex', false, { normalization: true,
+    quality: () => ({ requested: 'original', requestedCodec: null, delivered: null, analysisKey: 'known', loudness: { loudnessLufs: -18, peakLinear: 0.3 } }) })
+  h.engine.acceptRemoteLoudness('known', { loudnessLufs: -5, peakLinear: 1 })
+  assert.equal(h.engine.getNormalizationGainDb(), 4)
+  h.engine.setCurrentReplayGainDb(-9)
+  h.engine.setReplayGainEnabled(true)
+  assert.equal(h.engine.getNormalizationMode(), 'replaygain')
+  assert.equal(h.engine.getNormalizationGainDb(), -9)
+  h.engine.normalizationEnabled = false
+  assert.equal(h.engine.getNormalizationMode(), 'off')
+  assert.equal(h.engine.getNormalizationGainDb(), 0)
+})
+
+test('unknown tracks stop adaptive work when normalization is off or ReplayGain is active', async t => {
+  const h = await remoteHarness(t, true, 'plex', false, { normalization: true, sampleRate: 48000 })
+  const state = h.internals.remoteStreamState as unknown as { adaptiveNormalization: { estimator: { measuredSeconds: number } } }
+  const measured = state.adaptiveNormalization.estimator.measuredSeconds
+  h.engine.normalizationEnabled = false
+  const send = (decodedSeconds: number) => h.internals.handleRemoteStreamChunk({ sessionId: 1, path: h.track.path, sourceType: 'plex', sampleRate: 48000, channels: 2,
+    frameCount: 48000, decodedFrames: decodedSeconds * 48000, decodedSeconds, pcmData: interleavedTone(48000, 1, 0.9).buffer as ArrayBuffer })
+  send(2)
+  assert.equal(h.engine.getNormalizationGainDb(), 0)
+  assert.equal(state.adaptiveNormalization.estimator.measuredSeconds, measured)
+  h.engine.setCurrentReplayGainDb(-3)
+  h.engine.setReplayGainEnabled(true)
+  h.engine.normalizationEnabled = true
+  send(3)
+  assert.equal(h.engine.getNormalizationGainDb(), -3)
+  assert.equal(state.adaptiveNormalization.estimator.measuredSeconds, measured)
+  h.engine.setReplayGainEnabled(false)
+  send(4)
+  assert.ok(h.engine.getNormalizationGainDb() < -12)
+  assert.ok(state.adaptiveNormalization.estimator.measuredSeconds > measured)
+})
+
+test('automatic representation replacement retains provisional normalization evidence', async t => {
+  const h = await automaticHarness(t, true)
+  const before = (h.internals.remoteStreamState as unknown as { adaptiveNormalization: unknown }).adaptiveNormalization
+  const change = h.internal.changeAutomaticQuality(h.internal.automaticQualitySnapshot(), { mode: 'automatic', target: 128 })
+  await flush(); h.complete(1); await change
+  assert.equal((h.internals.remoteStreamState as unknown as { adaptiveNormalization: unknown }).adaptiveNormalization, before)
+  assert.equal(h.engine.getNormalizationGainDb(), -6)
+})
+
+test('a full scan acquired during an automatic replacement fades up from the provisional gain', async t => {
+  const h = await automaticHarness(t, true)
+  const change = h.internal.changeAutomaticQuality(h.internal.automaticQualitySnapshot(), { mode: 'automatic', target: 128 })
+  await flush()
+  h.complete(1, true, { mode: 'automatic', requested: 128, requestedCodec: 'opus', delivered: null, loudness: { loudnessLufs: -16, peakLinear: 0.3 } })
+  await change
+  assert.equal(h.engine.getNormalizationGainDb(), 2)
+  assert.equal(h.engine.isNormalizationApproximate(), false)
+  assert.equal(h.workletMessages.filter(m => m.type === 'set-gain' && m.sessionId === 2).at(-1)!.rampFrames, 3000)
+})
+
+test('startup picks up an already completed scan even if its notification was missed', async t => {
+  const h = await remoteHarness(t, false, 'subsonic', false, { normalization: true,
+    quality: () => ({ requested: 'original', requestedCodec: null, delivered: null, analysisKey: 'ready', loudness: null }) })
+  window.electronAPI.getRemoteAudioAnalysis = async key => {
+    assert.equal(key, 'ready')
+    return { version: 1, loudnessLufs: -16, peakLinear: 0.3, duration: 1800, peaks: Array(512).fill(0) }
+  }
+  const load = h.engine.loadRemoteStream(h.track)
+  await flush(); h.complete(1); await load; await flush()
+  assert.equal(h.engine.getNormalizationGainDb(), 2)
+  assert.equal(h.engine.isNormalizationApproximate(), false)
+})
+
+test('a delayed lookup from a stopped decoder cannot alter a replacement track', async t => {
+  let key = 'old'
+  const h = await remoteHarness(t, false, 'subsonic', false, { normalization: true,
+    quality: () => ({ requested: 'original', requestedCodec: null, delivered: null, analysisKey: key, loudness: null }) })
+  const lookup = deferred<import('../../types/remoteAudioAnalysis.ts').RemoteAudioAnalysis | null>()
+  window.electronAPI.getRemoteAudioAnalysis = requested => requested === 'old' ? lookup.promise : Promise.resolve(null)
+  const oldLoad = h.engine.loadRemoteStream(h.track)
+  await flush(); h.complete(1); await oldLoad
+  key = 'new'
+  const newLoad = h.engine.loadRemoteStream({ ...h.track, path: 'subsonic://7/different' })
+  await flush(); h.complete(2); await newLoad
+  lookup.resolve({ version: 1, loudnessLufs: -20, peakLinear: 0.3, duration: 1800, peaks: Array(512).fill(0) })
+  await flush()
+  assert.equal(h.engine.getNormalizationGainDb(), -6)
+  assert.equal(h.engine.isNormalizationApproximate(), true)
+})
 
 test('automatic Standard change resumes from the acknowledged audio frame and retains its mode', async t => {
   const h = await automaticHarness(t)

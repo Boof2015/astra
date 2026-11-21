@@ -318,4 +318,11 @@ export class ProgressiveKWeightedLoudnessAnalyzer {
       frameCount: this.frameCount
     }
   }
+
+  /** Start a new measurement window without interrupting the K-weight filters. */
+  resetMeasurement(): void {
+    this.weightedSumSquares = 0
+    this.frameCount = 0
+    this.peakLinear = 0
+  }
 }

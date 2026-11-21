@@ -1,3 +1,5 @@
+import { AdaptiveNormalization } from './adaptiveNormalization'
+import type { RemoteAudioAnalysis, RemoteAudioLoudness } from '../../types/remoteAudioAnalysis'
 import { AutomaticQualityCoordinator, type AutomaticPlaybackSnapshot } from './AutomaticQualityCoordinator'
 import { playbackQualityRequest, type StreamingQualityRequest } from '../../types/streamingQuality'
 import { isRetainedRemoteSource, retainedRemoteSourceFromPath } from '../../shared/audio/retainedRemoteSource'
@@ -436,6 +438,7 @@ interface RemoteStreamRuntimeState {
   lastWaveformUpdateAt: number
   waveformUpdateTimer: ReturnType<typeof setTimeout> | null
   normalization: ProgressiveNormalizationAccumulator | null
+  adaptiveNormalization?: { estimator: AdaptiveNormalization; final: LoudnessAnalysis | null }
 }
 
 interface ParallaxSinkRuntimeState {
@@ -3280,9 +3283,13 @@ export class AudioEngine {
       return
     }
 
+    if (remoteState.adaptiveNormalization) {
+      this.applyAdaptiveRemoteGain(remoteState, options.force === true)
+      return
+    }
+
     if (remoteState.sourceType === 'local' || isRetainedRemoteSource(remoteState.sourceType)) {
-      // Use the load-time snapshot for retained remote and local playback.
-      // Missing analysis means unity gain, never a rolling mid-track estimate.
+      // Known remote loudness and the existing local path keep their fixed gain.
       this.normalizationApproximate = false
       this.applyNormalization()
       if (remoteState.completeBuffer) this.ensureCurrentLoudnessAnalysis()
@@ -3337,6 +3344,58 @@ export class AudioEngine {
       param.setValueAtTime(param.value, now)
       param.linearRampToValueAtTime(gainState.linearGain, now + (REMOTE_NORMALIZATION_SLEW_MS / 1000))
     }
+  }
+
+  private adaptiveRemoteGain(state: RemoteStreamRuntimeState, replayGainDb: number | null): GainState {
+    const adaptive = state.adaptiveNormalization!
+    if (!this._normalizationEnabled || (this._replayGainEnabled && replayGainDb != null) || adaptive.final) {
+      return this.resolveGainStateForAnalysis(adaptive.final, replayGainDb)
+    }
+    return adaptive.estimator.gain(this._targetLufs)
+  }
+
+  private applyAdaptiveRemoteGain(state: RemoteStreamRuntimeState, force = false, continuingPlayback = false): void {
+    const gain = this.adaptiveRemoteGain(state, this.currentReplayGainDb)
+    this.normalizationApproximate = gain.mode === 'normalization' && !state.adaptiveNormalization!.final
+    if (force || (!state.started && !continuingPlayback)) {
+      this.applyGainState(gain)
+      return
+    }
+    if (gain.mode === this._normalizationMode && Math.abs(gain.gainDb - this._normalizationGainDb) < 0.25
+      && !state.adaptiveNormalization!.final) return
+    if (gain.mode === this._normalizationMode && gain.gainDb === this._normalizationGainDb) return
+    const seconds = gain.gainDb > this._normalizationGainDb ? 3 : 0.25
+    this._normalizationGainDb = gain.gainDb
+    this._normalizationMode = gain.mode
+    this.remoteStreamNode?.port.postMessage({ type: 'set-gain', sessionId: state.sessionId,
+      gain: gain.linearGain / (state.gainBase ?? 1), rampFrames: Math.round(state.sampleRate * seconds) })
+  }
+
+  /** Only first-play estimates adopt a late result; known loudness stays fixed. */
+  acceptRemoteLoudness(key: string, analysis: RemoteAudioLoudness | null): void {
+    if (!key || !analysis || !Number.isFinite(analysis.loudnessLufs) || this.isNativeExclusiveMode()) return
+    for (const state of [this.remoteStreamState, this.nextRemoteStream?.state]) {
+      if (!state?.adaptiveNormalization || state.adaptiveNormalization.final || state.quality?.analysisKey !== key) continue
+      const final = { loudnessLufs: analysis.loudnessLufs, peakLinear: analysis.peakLinear ?? 0,
+        sampleRate: state.sampleRate, frameCount: Math.max(1, Math.round(state.durationSeconds * state.sampleRate)) }
+      state.adaptiveNormalization.final = final
+      if (state === this.remoteStreamState) {
+        this.currentNormalizationAnalysis = final
+        this.applyAdaptiveRemoteGain(state)
+      } else if (this.nextRemoteStream?.state === state) {
+        this.nextRemoteStream.normalizationAnalysis = final
+        this.updatePreparedRemoteGain()
+      }
+    }
+  }
+
+  private refreshAdaptiveRemoteLoudness(state: RemoteStreamRuntimeState): void {
+    const key = state.quality?.analysisKey
+    if (!key || !state.adaptiveNormalization || state.adaptiveNormalization.final) return
+    // Cover an analysis-ready event that arrived before this decoder's startup.
+    void window.electronAPI.getRemoteAudioAnalysis?.(key).then((analysis: RemoteAudioAnalysis | null) => {
+      if (state === this.remoteStreamState || state === this.nextRemoteStream?.state) this.acceptRemoteLoudness(key, analysis)
+    }).catch(() => undefined)
   }
 
   private emitRemoteWaveformUpdate(remoteState: RemoteStreamRuntimeState): void {
@@ -3483,6 +3542,13 @@ export class AudioEngine {
     remoteState.analyzedFrames = remoteState.bufferedFrames
     if (!isRetainedRemoteSource(remoteState.sourceType)) remoteState.waveform.ingestChunk(channelData, remoteState.startFrame + startFrame)
 
+    if (remoteState.adaptiveNormalization && !remoteState.adaptiveNormalization.final
+      && this._normalizationEnabled && !(this._replayGainEnabled && (prepared ? prepared.replayGainDb : this.currentReplayGainDb) != null)) {
+      remoteState.adaptiveNormalization.estimator.ingest(channelData, remoteState.startFrame + startFrame)
+      if (prepared) this.updatePreparedRemoteGain()
+      else this.applyAdaptiveRemoteGain(remoteState)
+    }
+
     if (remoteState.normalization) {
       remoteState.normalization.analyzer.ingest(channelData)
       const playableThresholdFrames = Math.floor(remoteState.sampleRate * REMOTE_STREAM_PLAYABLE_SECONDS)
@@ -3536,9 +3602,11 @@ export class AudioEngine {
       remoteState.sourceEnded = true
       if (remoteState.normalization) {
         this.applyRemoteNormalizationIfNeeded(remoteState, { force: true, markComplete: true })
-      } else {
+      } else if (!remoteState.adaptiveNormalization) {
         this.normalizationApproximate = false
       }
+      // Decoder EOF after a seek is not a complete-track loudness result.
+      this.refreshAdaptiveRemoteLoudness(remoteState)
       this.requestRemoteWaveformUpdate(remoteState, { force: true })
       this.remoteStreamNode?.port.postMessage({
         type: 'set-source-ended',
@@ -3660,7 +3728,10 @@ export class AudioEngine {
     const durationSeconds = info.durationSeconds && info.durationSeconds > 0
       ? info.durationSeconds
       : Math.max(track.duration, 0)
-    const savedLoudness = options.loudnessAnalysis !== undefined ? options.loudnessAnalysis : info.quality?.loudness
+    const retainedAdaptive = retained?.state.adaptiveNormalization
+    const savedLoudness = sourceType === 'local'
+      ? options.loudnessAnalysis
+      : options.loudnessAnalysis ?? retainedAdaptive?.final ?? info.quality?.loudness
     const fixedLoudnessAnalysis = savedLoudness && Number.isFinite(savedLoudness.loudnessLufs)
       ? {
           loudnessLufs: savedLoudness.loudnessLufs,
@@ -3699,6 +3770,10 @@ export class AudioEngine {
       ),
       lastWaveformUpdateAt: 0,
       waveformUpdateTimer: null,
+      adaptiveNormalization: isRetainedRemoteSource(sourceType)
+        ? (retainedAdaptive?.estimator.sampleRate === info.sampleRate ? retainedAdaptive : undefined)
+          ?? (!fixedLoudnessAnalysis ? { estimator: new AdaptiveNormalization(info.sampleRate), final: null } : undefined)
+        : undefined,
       normalization: sourceType === 'local' || isRetainedRemoteSource(sourceType)
         ? null
         : this._replayGainEnabled && this.currentReplayGainDb != null
@@ -3711,7 +3786,9 @@ export class AudioEngine {
     this.applyAnalysisRoutingPreferences(info.channels)
     this.emit('durationChange', this.remoteStreamState.durationSeconds)
 
-    if (sourceType === 'local' || isRetainedRemoteSource(sourceType)) {
+    if (this.remoteStreamState.adaptiveNormalization) {
+      this.applyAdaptiveRemoteGain(this.remoteStreamState, true)
+    } else if (sourceType === 'local' || isRetainedRemoteSource(sourceType)) {
       this.normalizationApproximate = false
       this.applyNormalization()
     } else if (this._normalizationEnabled && this._replayGainEnabled && this.currentReplayGainDb != null) {
@@ -3741,7 +3818,14 @@ export class AudioEngine {
     if (info.initialChunk) {
       this.handleRemoteStreamChunk(info.initialChunk)
     }
+    if (fixedLoudnessAnalysis && this.remoteStreamState.adaptiveNormalization && !this.remoteStreamState.adaptiveNormalization.final) {
+      // A seek/quality replacement can acquire a newly completed scan. Seed the
+      // new worklet session with the old estimate, then ramp as playback resumes.
+      this.remoteStreamState.adaptiveNormalization.final = fixedLoudnessAnalysis
+      this.applyAdaptiveRemoteGain(this.remoteStreamState, false, retained?.state.started === true)
+    }
     this.reportLocalProgressiveStreamPosition(this.remoteStreamState, true)
+    this.refreshAdaptiveRemoteLoudness(this.remoteStreamState)
 
     this.assertCurrentLoadOperation(loadOperation)
     return info
@@ -4043,6 +4127,9 @@ export class AudioEngine {
       ? { loudnessLufs: savedLoudness.loudnessLufs, peakLinear: savedLoudness.peakLinear ?? 0,
           sampleRate: info.sampleRate, frameCount: Math.max(1, Math.round(durationSeconds * info.sampleRate)) }
       : null
+    if (isRetainedRemoteSource(info.sourceType) && !normalizationAnalysis) {
+      state.adaptiveNormalization = { estimator: new AdaptiveNormalization(info.sampleRate), final: null }
+    }
     const ready = new Promise<void>((resolve, reject) => {
       this.nextRemoteStream = { state, replayGainDb, gain: { gainDb: 0, linearGain: 1, mode: 'off' },
         normalizationAnalysis, ready: false, resolve, reject }
@@ -4051,6 +4138,7 @@ export class AudioEngine {
     this.updatePreparedRemoteGain()
     if (info.initialChunk) this.handleRemoteStreamChunk(info.initialChunk)
     this.reportLocalProgressiveStreamPosition(state, true)
+    this.refreshAdaptiveRemoteLoudness(state)
     await ready
     this.assertCurrentPrebufferOperation(generation)
   }
@@ -4108,7 +4196,8 @@ export class AudioEngine {
       && next.state.normalization
       ? this.resolveProgressiveNormalizationGain(next.state.normalization)
       : null
-    next.gain = progressiveGain ?? this.resolveGainStateForAnalysis(next.normalizationAnalysis ?? null, next.replayGainDb)
+    next.gain = next.state.adaptiveNormalization ? this.adaptiveRemoteGain(next.state, next.replayGainDb)
+      : progressiveGain ?? this.resolveGainStateForAnalysis(next.normalizationAnalysis ?? null, next.replayGainDb)
     this.remoteStreamNode?.port.postMessage({ type: 'set-gain', sessionId: next.state.sessionId,
       gain: next.gain.linearGain / (next.state.gainBase ?? 1) })
   }
@@ -4151,8 +4240,9 @@ export class AudioEngine {
     this.currentReplayGainDb = next.replayGainDb
     this.currentNormalizationAnalysis = next.normalizationAnalysis ?? null
     this.currentWaveformRequestId = next.waveformRequestId ?? null
-    this.normalizationApproximate = next.state.sourceType !== 'local' && !isRetainedRemoteSource(next.state.sourceType)
-      && next.gain.mode === 'normalization' && !next.state.sourceEnded
+    this.normalizationApproximate = next.gain.mode === 'normalization' && (next.state.adaptiveNormalization
+      ? !next.state.adaptiveNormalization.final
+      : next.state.sourceType !== 'local' && !isRetainedRemoteSource(next.state.sourceType) && !next.state.sourceEnded)
     if (next.state.normalization) {
       next.state.normalization.nextUpdateFrameThreshold = next.state.analyzedFrames
         + Math.floor(next.state.sampleRate * REMOTE_NORMALIZATION_UPDATE_SECONDS)
@@ -6176,7 +6266,7 @@ export class AudioEngine {
     }
 
     if (this.remoteStreamState) {
-      this.remoteStreamState.normalization = this.remoteStreamState.sourceType === 'local'
+      this.remoteStreamState.normalization = this.remoteStreamState.sourceType === 'local' || isRetainedRemoteSource(this.remoteStreamState.sourceType)
         ? null
         : this._replayGainEnabled && this.currentReplayGainDb != null
           ? null
