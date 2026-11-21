@@ -8,6 +8,7 @@ import { ProgressiveStartupRegistry } from './progressiveStartupRegistry.ts'
 import { ProgressivePcmDelivery } from './progressivePcmDelivery.ts'
 import { CompletedStreamingDiagnostics } from './services/streamingDiagnostics.ts'
 import { PlaybackNetworkPriority } from './services/playbackNetworkPriority.ts'
+import { remoteAudioStartupUrl } from '../shared/audio/remoteAudioInput.ts'
 import { withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder } from '../shared/audio/remoteCompatibility.ts'
 import { deliveredAudioFormat, type StreamingQualityRequest } from '../types/streamingQuality.ts'
 
@@ -36,7 +37,7 @@ function harness(fail: (attempt: number) => string | null, holdRetry = false, st
     StratumProofPcm: { open: async () => { throw new Error('Sidecar cannot prepare this track.') } },
     stratumConnections: { playbackFailed: () => { events.push({ stratumFallback: true }) } },
     parseSubsonicTrackPath: () => ({ sourceId: 1, sourceTrackId: 'song' }),
-    withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder, deliveredAudioFormat,
+    withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder, deliveredAudioFormat, remoteAudioStartupUrl,
     remoteStreamSessions: sessions, completedStreamingDiagnostics: new CompletedStreamingDiagnostics(), progressiveStartupControllers: registry,
     playbackNetworkPriority: new PlaybackNetworkPriority(),
     library: { getTrackByPath: () => ({ channels: 2 }) }, resolveBinary: async (name: string) => name,

@@ -7,6 +7,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { setTimeout as delay } from 'node:timers/promises'
 import { RemoteAudioCache, remoteAudioCacheKey, type RemoteAudioSource } from './remoteAudioCache.ts'
+import { remoteAudioStartupUrl } from '../../shared/audio/remoteAudioInput.ts'
 
 function audioResponse(data: string): Response {
   return new Response(Buffer.from(data), { headers: { 'content-type': 'audio/flac' } })
@@ -72,6 +73,31 @@ test('complete audio survives process restart and plays without contacting the s
   assert.equal(await (await fetch(warm.url)).text(), 'original bytes')
   assert.equal(requests, 1)
   warm.release()
+})
+
+test('only unfinished Ogg startup reads suppress ranges; seeks and other containers retain them', async t => {
+  const { cache } = await fixture(t)
+  for (const header of ['OggS', 'ftyp']) {
+    let upstream!: ReadableStreamDefaultController<Uint8Array>
+    const lease = await cache.acquire(source(header, async () => new Response(new ReadableStream({
+      start(c) { upstream = c }
+    }), { headers: { 'content-length': '12', 'content-type': 'application/octet-stream' } })))
+    t.after(lease.release)
+    while (!upstream) await delay(1)
+    upstream.enqueue(Buffer.from(header + 'ab'))
+    const started = await fetch(remoteAudioStartupUrl(lease.url), { headers: { Range: 'bytes=0-' } })
+    assert.equal(started.status, header === 'OggS' ? 200 : 206)
+    assert.equal(started.headers.get('accept-ranges'), header === 'OggS' ? null : 'bytes')
+    await started.body!.cancel()
+    const seek = await fetch(lease.url, { headers: { Range: 'bytes=0-3' } })
+    assert.equal(seek.status, 206)
+    assert.equal(await seek.text(), header)
+    upstream.enqueue(Buffer.from('cdefgh')); upstream.close()
+    await lease.finished()
+    const cached = await fetch(remoteAudioStartupUrl(lease.url), { headers: { Range: 'bytes=4-5' } })
+    assert.equal(cached.status, 206)
+    assert.equal(await cached.text(), 'ab')
+  }
 })
 
 test('eviction is oldest-first and clear leaves leased audio retained after release', async t => {
@@ -319,7 +345,7 @@ test('real FFmpeg can decode an original M4A whose index follows its audio', { t
   const lease = await cache.acquire(source('ffmpeg-m4a', async () => new Response(bytes, {
     headers: { 'content-type': 'audio/mp4', 'content-length': String(bytes.length) }
   })))
-  const actual = await decode(lease.url).result
+  const actual = await decode(remoteAudioStartupUrl(lease.url)).result
   const expected = await decode(m4aPath).result
   assert.deepEqual(actual, expected)
   const sought = await decode(lease.url, 2).result

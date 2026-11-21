@@ -10,6 +10,7 @@ import { ProgressiveStartupRegistry } from '../../src/main/progressiveStartupReg
 import { ProgressivePcmDelivery } from '../../src/main/progressivePcmDelivery.ts'
 import { resolveLocalProgressiveBackpressureAction, REMOTE_PROGRESSIVE_PCM_MAX_BYTES } from '../../src/main/progressiveStreamBackpressure.ts'
 import { withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder } from '../../src/shared/audio/remoteCompatibility.ts'
+import { remoteAudioStartupUrl } from '../../src/shared/audio/remoteAudioInput.ts'
 import { StratumProofPcm } from '../../src/main/services/stratumProofPlayback.ts'
 import { StratumPrefetchGate, canPrefetchStratum } from '../../src/main/services/stratumPrefetch.ts'
 import { PlaybackNetworkPriority } from '../../src/main/services/playbackNetworkPriority.ts'
@@ -75,7 +76,7 @@ export function mainHarness(config: StratumProofConfig, ffmpeg: string,
     stratumPlaybackQuality, automaticStreamingQuality: options.policy ?? new AutomaticStreamingQuality(),
     parseStratumProofConfig, stratumProofRoute, stratumQualitySelection, resolveStreamingQuality,
     stratumConnections: options.installed, getStratumAudioCache: () => options.cache, streamingQualityPreferences: { read: () => ({ global: 'original', overrides: {} }) },
-    withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder,
+    withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder, remoteAudioStartupUrl,
     remoteStreamSessions: sessions, completedStreamingDiagnostics, stratumPrefetchGate, canPrefetchStratum,
     playbackNetworkPriority: options.priority ?? new PlaybackNetworkPriority(), progressiveStartupControllers: registry, resolveLocalProgressiveBackpressureAction,
     isDev: !options.installed, app: { isPackaged: false }, process: { env: { ASTRA_STRATUM_PROOF_CONFIG: 'fixture' } },

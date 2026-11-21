@@ -279,7 +279,7 @@ test('real native Opus decoding starts before EOF and retains exact frames throu
   let requests = 0
   const source = { provider: 'fixture', account: 'a', track: 'song', revision: '1', representation: 'opus:64:v1',
     open: async () => { requests++; return new Response(new ReadableStream<Uint8Array>({ start(c) { upstream = c } }), {
-      headers: { 'content-type': 'audio/ogg' }
+      headers: { 'content-type': 'audio/ogg', 'content-length': String(encoded.length) }
     }) } }
   const lease = await cache.acquire(source)
   while (!upstream) await new Promise(resolve => setImmediate(resolve))
@@ -323,10 +323,11 @@ for (const policy of ['processed', 'direct'] as const) {
           progress: async () => ({ complete: true, loadedBytes: 100, totalBytes: 100, error: null }) }
       }, runProbe: async () => JSON.stringify({ streams: [{ codec_type: 'audio', codec_name: codec, sample_rate: '48000', channels: 2, sample_fmt: 's16', duration: '60' }] }),
       startRemoteDecoder: options => {
-        if (!options.args.includes(`http://cache/${codec}`)) throw new Error('Decoder (codec ac4) not found for input stream #0:0')
+        const inputUrl = options.args[options.args.indexOf('-i') + 1].split('?')[0]
+        if (inputUrl !== `http://cache/${codec}`) throw new Error('Decoder (codec ac4) not found for input stream #0:0')
         const pcm = Buffer.alloc(40000 * 4)
-      options.onPcm?.(pcm, options.input.status().publishedFrame)
-      options.input.append(pcm)
+        options.onPcm?.(pcm, options.input.status().publishedFrame)
+        options.input.append(pcm)
         return { ready: Promise.resolve(), done: Promise.resolve(), cancel: () => options.input.cancel(), pid: undefined, pendingBytes: 0 }
       } })
       await h.controller.configureNativeOutput({ policy, requestedSampleRate: null })
@@ -465,7 +466,7 @@ for (const action of ['pause', 'seek', 'paused-seek', 'skip', 'failure'] as cons
       replacing = typeof request === 'object' && request.target === 128
       return automaticSource(request)
     }, runProbe: async (_file, args) => {
-      if (replacing && args.at(-1) === 'http://cache/internal') {
+      if (replacing && args.at(-1)?.split('?')[0] === 'http://cache/internal') {
         await ready
         if (action === 'failure') throw new Error('Candidate probe failed')
       }
@@ -760,8 +761,9 @@ test('native format rejection falls through FLAC and Opus to MP3, while forbidde
         release: () => { released.push(compatibility ?? 'original') }, finished: async () => {},
         progress: async () => ({ loadedBytes: 0, totalBytes: null, complete: false, error: 'HTTP failure', failureKind }) }
     }, runProbe: async (_command, args) => {
-      if (args.includes('http://cache/original')) throw new Error('Decoder (codec ac4) not found')
-      if (args.includes('http://cache/flac') || args.includes('http://cache/opus')) throw new Error('HTTP error')
+      const inputUrl = args.at(-1)?.split('?')[0]
+      if (inputUrl === 'http://cache/original') throw new Error('Decoder (codec ac4) not found')
+      if (inputUrl === 'http://cache/flac' || inputUrl === 'http://cache/opus') throw new Error('HTTP error')
       return JSON.stringify({ streams: [{ codec_type: 'audio', codec_name: 'mp3', sample_rate: '48000', channels: 2, sample_fmt: 's16' }] })
     } })
     if (failureKind) {

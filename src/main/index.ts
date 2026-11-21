@@ -46,6 +46,7 @@ import {
 } from './services/libraryIntegrity'
 import { LibraryLatestSyncCoordinator } from './services/libraryLatestSync'
 import { RemoteAudioCache, type RemoteAudioLease } from './services/remoteAudioCache'
+import { remoteAudioStartupUrl } from '../shared/audio/remoteAudioInput'
 import { normalizeRemoteCacheLimitGb } from '../types/remoteAudioCache'
 import { acquireQualityAudio } from './services/streamingQualityAcquisition'
 import { withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder } from '../shared/audio/remoteCompatibility'
@@ -11461,7 +11462,7 @@ const automaticQualityPreparations = new AutomaticQualityPreparations({
   prime: async (lease, position, signal) => {
     const ffmpeg = await resolveBinary('ffmpeg')
     if (!ffmpeg) throw new Error('FFmpeg is unavailable.')
-    const progress = await execFileAsync(ffmpeg, ['-v', 'error', '-nostdin', '-ss', String(position), '-i', lease.url,
+    const progress = await execFileAsync(ffmpeg, ['-v', 'error', '-nostdin', '-ss', String(position), '-i', position > 0 ? lease.url : remoteAudioStartupUrl(lease.url),
       '-map', '0:a:0', '-t', '8', '-vn', '-progress', 'pipe:1', '-f', 'null', '-'], { signal, timeout: 20_000, maxBuffer: 256 * 1024 })
     const times = [...progress.matchAll(/^out_time_us=(\d+)$/gm)].map(match => Number(match[1]))
     if (!times.some(time => time >= 7_500_000)) throw new Error('Replacement audio is not ready at the current position.')
@@ -11701,7 +11702,7 @@ async function startProgressiveStreamAttempt(
         if (probe) {
           try {
             const payload = await execFileAsync(probe, ['-v', 'error', '-analyzeduration', '100000', '-probesize', '65536',
-              '-show_streams', '-of', 'json', cacheLease.url], { signal: abortController.signal, timeout: 10_000, maxBuffer: 256 * 1024 })
+              '-show_streams', '-of', 'json', remoteAudioStartupUrl(cacheLease.url)], { signal: abortController.signal, timeout: 10_000, maxBuffer: 256 * 1024 })
             cacheLease.quality.delivered = deliveredAudioFormat(JSON.parse(payload))
             normalizedChannels = Math.max(1, Math.min(8, cacheLease.quality.delivered?.channels ?? normalizedChannels))
           } catch { /* A metadata probe is advisory; playback can still decode. */ }
@@ -11711,7 +11712,7 @@ async function startProgressiveStreamAttempt(
     }
     const ffmpegInputArgs = [
       ...(requestedStartTimeSeconds > 0 ? ['-ss', String(requestedStartTimeSeconds)] : []),
-      '-i', cacheLease?.url ?? filePath
+      '-i', cacheLease && requestedStartTimeSeconds === 0 ? remoteAudioStartupUrl(cacheLease.url) : cacheLease?.url ?? filePath
     ]
     const ffmpeg = spawn(
       ffmpegPath,

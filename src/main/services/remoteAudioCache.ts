@@ -652,17 +652,35 @@ export class RemoteAudioCache {
   }
 
   private async serve(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const entry = this.tokens.get((request.url ?? '').slice(1))
+    const path = (request.url ?? '').slice(1)
+    const separator = path.indexOf('?')
+    const token = separator < 0 ? path : path.slice(0, separator)
+    const query = separator < 0 ? undefined : path.slice(separator + 1)
+    const startup = query === 'startup=1'
+    const entry = query !== undefined && !startup ? undefined : this.tokens.get(token)
     if (!entry || entry.leases === 0 || (request.method !== 'GET' && request.method !== 'HEAD')) {
       response.writeHead(404).end()
       return
     }
     const controller = new AbortController()
     response.once('close', () => controller.abort())
-    await this.waitForBytes(entry, 0, controller.signal)
+    await this.waitForBytes(entry, startup ? 3 : 0, controller.signal)
+    let streamingOgg = false
+    if (startup && !entry.complete) {
+      const file = await open(this.dataPath(entry.key), 'r')
+      try {
+        const header = Buffer.alloc(4)
+        const { bytesRead } = await file.read(header, 0, 4, 0)
+        streamingOgg = bytesRead === 4 && header.toString('ascii') === 'OggS'
+      } finally { await file.close() }
+    }
+    // Ogg demuxers seek to the last page to learn duration when HTTP advertises
+    // seeking. On a growing file that stalls first audio until the whole download
+    // arrives. Startup readers can consume it sequentially; explicit seeks keep
+    // the normal URL, and containers needing a footer/index remain seekable.
     // A chunked upstream has no trustworthy total yet. Ignore Range until EOF
     // establishes it; HTTP permits a full 200 response to a Range request.
-    const range = entry.total === null ? undefined : request.headers.range
+    const range = entry.total === null || streamingOgg ? undefined : request.headers.range
     let start = 0
     let end = entry.total !== null ? entry.total - 1 : null
     if (range) {
@@ -680,7 +698,7 @@ export class RemoteAudioCache {
     }
     response.setHeader('Content-Type', entry.contentType)
     response.setHeader('Cache-Control', 'no-store')
-    if (entry.total !== null) response.setHeader('Accept-Ranges', 'bytes')
+    if (entry.total !== null && !streamingOgg) response.setHeader('Accept-Ranges', 'bytes')
     if (end !== null) response.setHeader('Content-Length', end - start + 1)
     if (range) response.setHeader('Content-Range', `bytes ${start}-${end}/${entry.total}`)
     response.writeHead(range ? 206 : 200)

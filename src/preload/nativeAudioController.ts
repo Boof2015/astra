@@ -1,6 +1,7 @@
 import { NativeRemoteNormalization, type NativeNormalizationEvidence } from './nativeRemoteNormalization'
 import { access } from 'fs/promises'
 import { withRemoteCompatibility, RemoteCompatibilityFailure, isUnsupportedRemoteDecoder } from '../shared/audio/remoteCompatibility'
+import { remoteAudioStartupUrl } from '../shared/audio/remoteAudioInput'
 import { resolveStaticNormalizationGain } from '../shared/audio/normalizationGain'
 import type { RemoteAudioLoudness } from '../types/remoteAudioAnalysis'
 import { execFile, spawn } from 'child_process'
@@ -1408,7 +1409,7 @@ export function createNativeAudioController(
       if (!probe || !ffmpeg) throw new Error('FFmpeg/ffprobe could not be resolved for native playback.')
       const probeStart = performance.now()
       decoding = true
-      const payload = JSON.parse(await runProbe(probe, ['-v', 'error', '-show_streams', '-of', 'json', source.url], signal)) as { streams?: FfprobeStreamInfo[] }
+      const payload = JSON.parse(await runProbe(probe, ['-v', 'error', '-show_streams', '-of', 'json', remoteAudioStartupUrl(source.url)], signal)) as { streams?: FfprobeStreamInfo[] }
       throwIfDecodeAborted(signal)
       const stream = payload.streams?.find(item => item.codec_type === 'audio') ?? payload.streams?.[0]
       if (!stream) throw new Error('No audio stream found for native playback.')
@@ -1430,7 +1431,7 @@ export function createNativeAudioController(
       const decoder = (options.startRemoteDecoder ?? startNativePcmDecoder)({
         command: ffmpeg,
         args: ['-v', 'error', '-nostdin', ...(startFrame ? ['-ss', String(startFrame / sampleRate)] : []),
-          '-i', source.url, '-map', '0:a:0', '-vn', '-sn', '-dn', ...getFfmpegFormatArgs(sampleFormat), 'pipe:1'],
+          '-i', startFrame ? source.url : remoteAudioStartupUrl(source.url), '-map', '0:a:0', '-vn', '-sn', '-dn', ...getFfmpegFormatArgs(sampleFormat), 'pipe:1'],
         input, signal, validateEof: () => heldSource.finished(), onPcm: normalization?.observe,
         onFailure: error => {
           if (session) session.error = error
