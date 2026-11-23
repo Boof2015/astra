@@ -5781,7 +5781,7 @@ async function resolveSubsonicArtworkHash(hash: string, refresh = false, existin
           const credentials = requireSubsonicSourceCredentials(parsed.sourceId)
           const payload = await fetchSubsonicCoverArt(credentials.connection, parsed.artworkId, { timeoutMs: 12_000, retries: 1, signal })
           return { data: Buffer.from(payload.data), contentType: payload.contentType }
-        })
+        }, refresh ? 'background' : 'display')
       })
       if (!cachedHash) return null
       if (!refresh) await library.replaceSubsonicArtworkHash(parsed.sourceId, hash, cachedHash)

@@ -1,12 +1,15 @@
 import { memo, useEffect, useRef, useState } from 'react'
+import { SUBSONIC_ARTWORK_HASH_PREFIX } from '../../../shared/library/artworkReference'
 import { buildArtworkProtocolUrl, useLibraryStore } from '../../stores/libraryStore'
 import type { ArtworkVariant } from '../../stores/libraryStore'
 import { forgetDisplayedArtwork, hasDisplayedArtwork, rememberDisplayedArtwork } from '../../utils/displayedArtwork'
+import { preloadArtwork } from '../../utils/preloadArtwork'
 import {
   ARTWORK_PRELOAD_MARGIN_PX,
   isElementWithinPreloadRange,
   resolveArtworkScrollRoot
 } from '../../utils/lazyArtworkVisibility'
+import ArtworkImage from './ArtworkImage'
 
 interface AlbumArtworkProps {
   hash: string | null
@@ -16,80 +19,11 @@ interface AlbumArtworkProps {
   virtualized?: boolean
 }
 
-interface VirtualizedAlbumArtworkProps {
+interface LazyAlbumArtworkProps {
   hash: string | null
   alt: string
   className: string
   variant: ArtworkVariant
-}
-
-function ArtworkPlaceholder({ className }: { className: string }) {
-  return <div className={`album-artwork-placeholder ${className}`}>♫</div>
-}
-
-// react-window already limits these images to the visible rows plus a small
-// overscan. Avoid setting up an IntersectionObserver, ResizeObserver, timers,
-// a store subscription, and a second Image decode every time a row is recycled.
-function VirtualizedAlbumArtwork({
-  hash,
-  alt,
-  className,
-  variant
-}: VirtualizedAlbumArtworkProps) {
-  const artworkUrl = hash ? buildArtworkProtocolUrl(hash, variant) : null
-  const [failedArtworkUrl, setFailedArtworkUrl] = useState<string | null>(null)
-
-  if (!artworkUrl || failedArtworkUrl === artworkUrl) {
-    return <ArtworkPlaceholder className={className} />
-  }
-
-  return (
-    <img
-      src={artworkUrl}
-      alt={alt}
-      className={className}
-      // A previous display is not a guarantee that Chromium still has the
-      // decoded bitmap. Keep remounted/overscan rows on the lazy path too;
-      // their deterministic URLs already reuse the normal image cache.
-      loading="lazy"
-      decoding="async"
-      onLoad={() => rememberDisplayedArtwork(artworkUrl)}
-      onError={() => { forgetDisplayedArtwork(artworkUrl); setFailedArtworkUrl(artworkUrl) }}
-    />
-  )
-}
-
-function preloadArtwork(url: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const image = new Image()
-    let settled = false
-
-    const finish = (next: () => void) => {
-      if (settled) return
-      settled = true
-      next()
-    }
-
-    image.decoding = 'async'
-    image.onload = () => finish(() => resolve(url))
-    image.onerror = () => finish(() => reject(new Error('Failed to decode artwork image')))
-    image.src = url
-
-    if (image.complete && image.naturalWidth > 0 && image.naturalHeight > 0) {
-      finish(() => resolve(url))
-      return
-    }
-
-    if (typeof image.decode === 'function') {
-      void image.decode()
-        .then(() => {
-          finish(() => resolve(url))
-        })
-        .catch(() => {
-          // Keep onload/onerror as the fallback path for browsers that reject decode().
-        })
-    }
-  })
 }
 
 function AlbumArtwork({
@@ -99,14 +33,12 @@ function AlbumArtwork({
   variant = 'card',
   virtualized = false
 }: AlbumArtworkProps) {
-  if (virtualized) {
+  if (virtualized || hash?.startsWith(SUBSONIC_ARTWORK_HASH_PREFIX)) {
     return (
-      <VirtualizedAlbumArtwork
-        hash={hash}
-        alt={alt}
-        className={className}
-        variant={variant}
-      />
+      <ArtworkImage hash={hash} alt={alt} className={className} variant={variant}
+        placeholderClassName={`album-artwork-placeholder ${className}`}>
+        ♫
+      </ArtworkImage>
     )
   }
 
@@ -118,7 +50,7 @@ function LazyAlbumArtwork({
   alt,
   className,
   variant
-}: VirtualizedAlbumArtworkProps) {
+}: LazyAlbumArtworkProps) {
   const requestedUrl = hash ? buildArtworkProtocolUrl(hash, variant) : null
   const [readyUrl, setArtworkUrl] = useState<string | null>(() => hasDisplayedArtwork(requestedUrl) ? requestedUrl : null)
   // A recycled card must never show its previous track's art for one render.

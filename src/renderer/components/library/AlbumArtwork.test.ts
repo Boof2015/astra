@@ -14,18 +14,21 @@ const output = buildSync({
     import PlaylistCover from '../playlists/PlaylistCover'
     import { buildArtworkProtocolUrl } from '../../stores/libraryStore'
     import { rememberDisplayedArtwork, forgetDisplayedArtwork } from '../../utils/displayedArtwork'
-    export function album(warm, variant = 'card') {
-      const url = buildArtworkProtocolUrl('known-cover.jpg', 'card')
+    export function album(warm, variant = 'card', hash = 'known-cover.jpg', virtualized = false) {
+      const url = buildArtworkProtocolUrl(hash, 'card')
       if (warm) rememberDisplayedArtwork(url); else forgetDisplayedArtwork(url)
-      return renderToStaticMarkup(<AlbumArtwork hash="known-cover.jpg" variant={variant} />)
+      return renderToStaticMarkup(<AlbumArtwork hash={hash} variant={variant} virtualized={virtualized} />)
     }
-    export function playlist(favorites) {
-      return renderToStaticMarkup(<PlaylistCover hash="known-cover.jpg" name="List" isFavorites={favorites} />)
+    export function playlist(favorites, hash = 'known-cover.jpg') {
+      return renderToStaticMarkup(<PlaylistCover hash={hash} name="List" isFavorites={favorites} />)
     }
   ` },
   bundle: true, write: false, format: 'cjs', platform: 'node', packages: 'external'
 }).outputFiles[0].text
-const compiled = { exports: {} as { album: (warm: boolean, variant?: string) => string; playlist: (favorites: boolean) => string } }
+const compiled = { exports: {} as {
+  album: (warm: boolean, variant?: string, hash?: string, virtualized?: boolean) => string
+  playlist: (favorites: boolean, hash?: string) => string
+} }
 new Function('require', 'module', 'exports', output)(createRequire(import.meta.url), compiled, compiled.exports)
 
 test('returning to a known album renders its image immediately without a placeholder or preload effect', () => {
@@ -42,4 +45,15 @@ test('returning to a known album renders its image immediately without a placeho
 test('playlist covers render their stable image URL on the first render and keep the favorites icon', () => {
   assert.match(compiled.exports.playlist(false), /<img /)
   assert.doesNotMatch(compiled.exports.playlist(true), /<img /)
+})
+
+test('remote tracks, albums and playlists wait for viewport admission on a cold cover and render a warm one immediately', () => {
+  const hash = 'subsonic-artwork:1:album'
+  assert.match(compiled.exports.album(false, 'card', 'local.jpg', true), /<img /)
+  for (const virtualized of [true, false]) {
+    assert.doesNotMatch(compiled.exports.album(false, 'card', hash, virtualized), /<img /)
+    assert.doesNotMatch(compiled.exports.playlist(false, hash), /<img /)
+    assert.match(compiled.exports.album(true, 'card', hash, virtualized), /<img /)
+    assert.match(compiled.exports.playlist(false, hash), /<img /)
+  }
 })

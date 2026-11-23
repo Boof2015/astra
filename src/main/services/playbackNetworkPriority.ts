@@ -5,7 +5,10 @@
 export class PlaybackNetworkPriority {
   private readonly holds = new Set<symbol>()
   private readonly running = new Set<AbortController>()
-  private readonly waiting: Array<() => void> = []
+  private readonly waiting = {
+    display: [] as Array<(slot: AbortController) => void>,
+    background: [] as Array<(slot: AbortController) => void>
+  }
   private readonly limit: number
   constructor(limit = 6) { this.limit = limit }
 
@@ -21,13 +24,15 @@ export class PlaybackNetworkPriority {
     }
   }
 
-  async run<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  async run<T>(work: (signal: AbortSignal) => Promise<T>, priority: 'display' | 'background' = 'background'): Promise<T> {
     for (;;) {
-      while (this.held || this.running.size >= this.limit) await new Promise<void>(resolve => this.waiting.push(resolve))
-      const controller = new AbortController()
-      this.running.add(controller)
-      try { return await work(controller.signal) }
-      catch (error) {
+      const controller = this.held || this.running.size >= this.limit
+        ? await new Promise<AbortController>(resolve => this.waiting[priority].push(resolve))
+        : this.reserve()
+      try {
+        controller.signal.throwIfAborted()
+        return await work(controller.signal)
+      } catch (error) {
         // Yielding to playback is not a failure: queue the same work again.
         if (controller.signal.reason !== yielded) throw error
       } finally {
@@ -37,10 +42,18 @@ export class PlaybackNetworkPriority {
     }
   }
 
-  /** Woken work re-checks the limit itself, so an extra wake only re-queues it. */
+  private reserve(): AbortController {
+    const controller = new AbortController()
+    this.running.add(controller)
+    return controller
+  }
+
   private wake(): void {
-    if (this.held) return
-    for (let free = this.limit - this.running.size; free > 0 && this.waiting.length; free--) this.waiting.shift()!()
+    while (!this.held && this.running.size < this.limit) {
+      const next = this.waiting.display.shift() ?? this.waiting.background.shift()
+      if (!next) return
+      next(this.reserve())
+    }
   }
 }
 

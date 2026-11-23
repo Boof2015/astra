@@ -4,13 +4,13 @@ import { buildProviderRequestHeaders } from './providerClientIdentity'
 import type { ProviderUserState, ProviderSyncField, ProviderSyncValue } from '../../types/providerSync'
 import { validProviderValue } from '../../shared/sync/providerState'
 import { formatArtistNames, normalizeArtistNames } from '../../shared/library/artistCredits'
+import { SUBSONIC_ARTWORK_HASH_PREFIX } from '../../shared/library/artworkReference'
 
 const SUBSONIC_API_VERSION = '1.16.1'
 const SUBSONIC_CLIENT_ID = 'astra'
 const DEFAULT_TIMEOUT_MS = 12_000
 const DEFAULT_RETRIES = 1
 const MAX_SYNC_CONCURRENCY = 4
-const SUBSONIC_ARTWORK_HASH_PREFIX = 'subsonic-artwork:'
 
 export interface SubsonicConnectionConfig {
   baseUrl: string

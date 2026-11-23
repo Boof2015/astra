@@ -49,6 +49,7 @@ import {
 import { highlightSearchMatch } from '../../utils/searchHighlight'
 import { scoreTrackIdentityQuery } from '../../utils/trackSearch'
 import QuickLaunchBoundary from './QuickLaunchBoundary'
+import ArtworkImage from '../library/ArtworkImage'
 
 const SETTINGS_RESULT_LIMIT = 3
 const NAV_RESULT_LIMIT = 3
@@ -86,25 +87,11 @@ function compareScoredResults<T extends { score: number; id: string }>(a: T, b: 
 }
 
 function ResultThumbnail({ hash, fallback }: { hash: string | null | undefined; fallback: ReactNode }) {
-  const [url, setUrl] = useState<string | null>(null)
-  const getArtwork = useLibraryStore((state) => state.getArtwork)
-
-  useEffect(() => {
-    if (!hash) {
-      setUrl(null)
-      return
-    }
-    let cancelled = false
-    void getArtwork(hash, { variant: 'thumbnail' }).then((nextUrl) => {
-      if (!cancelled) setUrl(nextUrl ?? null)
-    })
-    return () => { cancelled = true }
-  }, [getArtwork, hash])
-
-  if (url) {
-    return <img src={url} className="ql-thumb" alt="" loading="lazy" decoding="async" onError={() => setUrl(null)} />
-  }
-  return <div className="ql-thumb ql-thumb-placeholder">{fallback}</div>
+  return (
+    <ArtworkImage hash={hash} variant="thumbnail" alt="" className="ql-thumb" placeholderClassName="ql-thumb ql-thumb-placeholder">
+      {fallback}
+    </ArtworkImage>
+  )
 }
 
 const IconNote = () => (

@@ -63,3 +63,23 @@ test('only the last of several holds releases, and real failures still reject', 
   assert.equal(ran, true)
   await assert.rejects(priority.run(async () => { throw new Error('404') }), /404/)
 })
+
+test('on playback release, display requests get the next slots ahead of catalog artwork', async () => {
+  const priority = new PlaybackNetworkPriority(2)
+  const release = priority.hold()
+  const order: string[] = []
+  const displayGate = deferred()
+  const background = priority.run(async () => { order.push('sync') })
+  const visible = ['album', 'playlist'].map(name => priority.run(async () => {
+    order.push(name)
+    await displayGate.promise
+  }, 'display'))
+  assert.equal(order.length, 0)
+  release()
+  const newcomer = priority.run(async () => { order.push('later sync') })
+  await tick()
+  assert.deepEqual(order, ['album', 'playlist'])
+  displayGate.resolve()
+  await Promise.all([background, ...visible, newcomer])
+  assert.deepEqual(order, ['album', 'playlist', 'sync', 'later sync'])
+})
